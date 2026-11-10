@@ -1,0 +1,358 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Go Audio Streamer</title>
+    <style>
+        :root {
+            --bg-color: #090d16;
+            --card-bg: #131d31;
+            --card-hover: #1b2845;
+            --text-main: #f8fafc;
+            --text-muted: #94a3b8;
+            --accent: #38bdf8;
+            --accent-hover: #0ea5e9;
+            --island-bg: rgba(19, 29, 49, 0.85);
+        }
+        * {
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-main);
+            margin: 0;
+            padding: 40px 20px 120px 20px; /* Extra bottom padding so content isn't hidden behind island */
+            display: flex;
+            justify-content: center;
+        }
+        .container {
+            width: 100%;
+            max-width: 850px;
+        }
+        header {
+            margin-bottom: 25px;
+            border-bottom: 1px solid #1e293b;
+            padding-bottom: 20px;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+        }
+        .header-top {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        h1 {
+            margin: 0;
+            font-size: 1.8rem;
+            color: var(--text-main);
+            letter-spacing: -0.5px;
+        }
+        .meta {
+            color: var(--text-muted);
+            font-size: 0.9rem;
+        }
+        .meta code {
+            background: #1e293b;
+            padding: 3px 8px;
+            border-radius: 6px;
+            color: var(--accent);
+        }
+        
+        /* Search Bar Styling */
+        .search-container {
+            position: relative;
+            width: 100%;
+        }
+        .search-input {
+            width: 100%;
+            padding: 12px 16px 12px 42px;
+            background-color: var(--card-bg);
+            border: 1px solid #1e293b;
+            border-radius: 12px;
+            color: var(--text-main);
+            font-size: 0.95rem;
+            outline: none;
+            transition: all 0.2s ease;
+        }
+        .search-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.15);
+        }
+        .search-icon {
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            font-size: 1rem;
+        }
+
+        /* Song List Grid/Cards */
+        .song-list {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        .song-card {
+            background-color: var(--card-bg);
+            border-radius: 12px;
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #1e293b;
+            transition: all 0.2s ease;
+        }
+        .song-card:hover {
+            background-color: var(--card-hover);
+            border-color: #334155;
+            transform: translateX(4px);
+        }
+        .song-info {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            overflow: hidden;
+        }
+        .play-btn {
+            background: var(--accent);
+            color: #0f172a;
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 1rem;
+            font-weight: bold;
+            transition: transform 0.1s ease, background 0.2s ease;
+            flex-shrink: 0;
+        }
+        .play-btn:hover {
+            background: var(--accent-hover);
+            transform: scale(1.05);
+        }
+        .song-title {
+            font-weight: 500;
+            font-size: 1rem;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .song-actions {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            flex-shrink: 0;
+        }
+        .direct-link {
+            color: var(--text-muted);
+            text-decoration: none;
+            font-size: 0.85rem;
+            transition: color 0.2s ease;
+        }
+        .direct-link:hover {
+            color: var(--accent);
+        }
+
+        /* Now Playing Island (Sticky Bottom Bar) */
+        .now-playing-island {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            width: calc(100% - 40px);
+            max-width: 850px;
+            background-color: var(--island-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 16px;
+            padding: 14px 20px;
+            box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            gap: 20px;
+            z-index: 1000;
+        }
+        .island-track-info {
+            flex-grow: 1;
+            min-width: 0;
+        }
+        .island-label {
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--accent);
+            margin-bottom: 2px;
+            font-weight: 600;
+        }
+        .island-title {
+            font-size: 0.95rem;
+            font-weight: 600;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            color: var(--text-main);
+        }
+        .island-controls {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+        .island-play-btn {
+            background: var(--text-main);
+            color: #0f172a;
+            border: none;
+            width: 38px;
+            height: 38px;
+            border-radius: 50%;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.9rem;
+            font-weight: bold;
+            transition: transform 0.1s ease;
+        }
+        .island-play-btn:hover {
+            transform: scale(1.05);
+        }
+        audio::-webkit-media-controls-panel {
+            background-color: #1e293b;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: var(--text-muted);
+            padding: 50px 20px;
+            background: var(--card-bg);
+            border-radius: 12px;
+            border: 1px dashed #1e293b;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="header-top">
+                <h1>⚡ Go Audio Streamer</h1>
+                <div class="meta">Root: <code>{{.MusicRoot}}</code></div>
+            </div>
+            <!-- Search Bar -->
+            <div class="search-container">
+                <span class="search-icon">🔍</span>
+                <input type="text" id="searchInput" class="search-input" placeholder="Search songs across folders...">
+            </div>
+        </header>
+
+        <div class="song-list" id="songList">
+            {{if .Songs}}
+                {{range .Songs}}
+                <div class="song-card" data-title="{{.Title}}">
+                    <div class="song-info">
+                        <button class="play-btn" onclick="playTrack('/stream?file={{.RelPath}}', '{{.Title}}', this)">▶</button>
+                        <span class="song-title">{{.Title}}</span>
+                    </div>
+                    <div class="song-actions">
+                        <a class="direct-link" href="/stream?file={{.RelPath}}" target="_blank">Direct Stream ↗</a>
+                    </div>
+                </div>
+                {{end}}
+            {{else}}
+                <div class="empty-state">No audio files found! Add some .mp3 files into <code>my_songs/</code> or its subfolders.</div>
+            {{end}}
+        </div>
+    </div>
+
+    <!-- Now Playing Island (Bottom Sticky Bar) -->
+    <div class="now-playing-island" id="nowPlayingIsland" style="display: none;">
+        <div class="island-track-info">
+            <div class="island-label">Now Playing</div>
+            <div class="island-title" id="islandTitle">Select a track</div>
+        </div>
+        <div class="island-controls">
+            <button class="island-play-btn" id="islandPlayPauseBtn" onclick="togglePlayPause()">⏸</button>
+        </div>
+        <!-- Hidden underlying audio element running the chunked stream -->
+        <audio id="mainAudio" style="display: none;"></audio>
+    </div>
+
+    <script>
+        const searchInput = document.getElementById('searchInput');
+        const songCards = document.querySelectorAll('.song-card');
+        const island = document.getElementById('nowPlayingIsland');
+        const islandTitle = document.getElementById('islandTitle');
+        const mainAudio = document.getElementById('mainAudio');
+        const islandPlayPauseBtn = document.getElementById('islandPlayPauseBtn');
+        
+        let currentActiveBtn = null;
+
+        // 1. Live Search Filtering Logic
+        searchInput.addEventListener('input', (e) => {
+            const term = e.target.value.toLowerCase();
+            songCards.forEach(card => {
+                const title = card.getAttribute('data-title').toLowerCase();
+                if (title.includes(term)) {
+                    card.style.display = 'flex';
+                } else {
+                    card.style.display = 'none';
+                }
+            });
+        });
+
+        // 2. Master Audio Player & Island Controller
+        function playTrack(url, title, btnElement) {
+            // Reset previous button icon if exists
+            if (currentActiveBtn && currentActiveBtn !== btnElement) {
+                currentActiveBtn.textContent = '▶';
+            }
+
+            if (mainAudio.src.includes(url) && !mainAudio.paused) {
+                // Pause if clicking the same currently playing track
+                mainAudio.pause();
+                btnElement.textContent = '▶';
+                islandPlayPauseBtn.textContent = '▶';
+                return;
+            }
+
+            // Load and play new track stream
+            mainAudio.src = url;
+            mainAudio.play().then(() => {
+                island.style.display = 'flex';
+                islandTitle.textContent = title;
+                btnElement.textContent = '⏸';
+                islandPlayPauseBtn.textContent = '⏸';
+                currentActiveBtn = btnElement;
+            }).catch(err => {
+                console.error("Playback error:", err);
+            });
+        }
+
+        function togglePlayPause() {
+            if (mainAudio.paused) {
+                mainAudio.play();
+                islandPlayPauseBtn.textContent = '⏸';
+                if (currentActiveBtn) currentActiveBtn.textContent = '⏸';
+            } else {
+                mainAudio.pause();
+                islandPlayPauseBtn.textContent = '▶';
+                if (currentActiveBtn) currentActiveBtn.textContent = '▶';
+            }
+        }
+
+        // Handle auto reset when audio ends
+        mainAudio.addEventListener('ended', () => {
+            islandPlayPauseBtn.textContent = '▶';
+            if (currentActiveBtn) currentActiveBtn.textContent = '▶';
+        });
+    </script>
+</body>
+</html>
