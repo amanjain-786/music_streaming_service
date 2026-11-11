@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"database/sql"
@@ -38,14 +39,15 @@ const loginRateLimit = 40
 const loginRateWindow = time.Minute
 
 type Song struct {
-	Title      string
-	Initial    string
-	RelPath    string
-	Folder     string
-	PlayCount  int
-	Added      time.Time
-	AddedLabel string
-	LastPlayed time.Time
+	Title           string
+	Initial         string
+	RelPath         string
+	Folder          string
+	PlayCount       int
+	GlobalPlayCount int
+	Added           time.Time
+	AddedLabel      string
+	LastPlayed      time.Time
 }
 
 type PageData struct {
@@ -54,10 +56,20 @@ type PageData struct {
 }
 
 var db *sql.DB
+
+type sessionData struct {
+	username string
+	expires  time.Time
+}
+
+type contextKey int
+
+const authenticatedUsernameKey contextKey = iota
+
 var sessions = struct {
 	sync.Mutex
-	items map[string]time.Time
-}{items: make(map[string]time.Time)}
+	items map[string]sessionData
+}{items: make(map[string]sessionData)}
 var loginRateLimits = struct {
 	sync.Mutex
 	clients     map[string]loginRateState
@@ -112,8 +124,9 @@ func authMiddleware(next http.Handler) http.Handler {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if authenticated(r) {
-			next.ServeHTTP(w, r)
+		if username, ok := authenticatedUsername(r); ok {
+			ctx := context.WithValue(r.Context(), authenticatedUsernameKey, username)
+			next.ServeHTTP(w, r.WithContext(ctx))
 			return
 		}
 
@@ -166,23 +179,23 @@ func allowLoginAttempt(remoteAddr string) (bool, time.Duration) {
 	return true, 0
 }
 
-func authenticated(r *http.Request) bool {
+func authenticatedUsername(r *http.Request) (string, bool) {
 	cookie, err := r.Cookie(sessionCookieName)
 	if err != nil {
-		return false
+		return "", false
 	}
 
 	sessions.Lock()
 	defer sessions.Unlock()
-	expires, ok := sessions.items[cookie.Value]
+	session, ok := sessions.items[cookie.Value]
 	if !ok {
-		return false
+		return "", false
 	}
-	if time.Now().After(expires) {
+	if time.Now().After(session.expires) {
 		delete(sessions.items, cookie.Value)
-		return false
+		return "", false
 	}
-	return true
+	return session.username, true
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -217,7 +230,10 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		}
 		sessionID := hex.EncodeToString(token)
 		sessions.Lock()
-		sessions.items[sessionID] = time.Now().Add(sessionLifetime)
+		sessions.items[sessionID] = sessionData{
+			username: username,
+			expires:  time.Now().Add(sessionLifetime),
+		}
 		sessions.Unlock()
 
 		http.SetCookie(w, &http.Cookie{
@@ -349,6 +365,17 @@ func openDB(path string) (*sql.DB, error) {
 			play_count     INTEGER NOT NULL DEFAULT 0,
 			last_played_at DATETIME
 		)`)
+	if err == nil {
+		_, err = conn.Exec(`
+			CREATE TABLE IF NOT EXISTS user_plays (
+				username       TEXT NOT NULL,
+				rel_path       TEXT NOT NULL,
+				title          TEXT NOT NULL,
+				play_count     INTEGER NOT NULL DEFAULT 0,
+				last_played_at DATETIME,
+				PRIMARY KEY (username, rel_path)
+			)`)
+	}
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -492,43 +519,66 @@ func isMediaFile(filename string) bool {
 	return isAudioFile(filename) || isVideoFile(filename)
 }
 
-func attachPlays(songs []Song) ([]Song, error) {
-	rows, err := db.Query(`SELECT rel_path, play_count, last_played_at FROM plays`)
+func attachPlays(songs []Song, username string) ([]Song, error) {
+	rows, err := db.Query(`SELECT rel_path, play_count FROM plays`)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
+	globalCounts := map[string]int{}
+	for rows.Next() {
+		var rel string
+		var count int
+		if err := rows.Scan(&rel, &count); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		globalCounts[filepath.ToSlash(rel)] = count
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
 
-	type stat struct {
+	rows, err = db.Query(`SELECT rel_path, play_count, last_played_at FROM user_plays WHERE username = ?`, username)
+	if err != nil {
+		return nil, err
+	}
+	type userStat struct {
 		count int
 		last  time.Time
 	}
-	byPath := map[string]stat{}
+	userCounts := map[string]userStat{}
 	for rows.Next() {
 		var rel string
 		var count int
 		var last sql.NullString
 		if err := rows.Scan(&rel, &count, &last); err != nil {
+			rows.Close()
 			return nil, err
 		}
-		item := stat{count: count}
+		item := userStat{count: count}
 		if last.Valid {
 			if parsed, err := time.Parse("2006-01-02 15:04:05", last.String); err == nil {
 				item.last = parsed
 			}
 		}
-		fmt.Println("Loaded play count for", rel, ":", count, "last played:", item.last)
-		byPath[filepath.ToSlash(rel)] = item
+		userCounts[filepath.ToSlash(rel)] = item
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 
 	for i := range songs {
-		if i == 0 {
-			fmt.Println(songs[i])
-		}
-		if item, ok := byPath[songs[i].RelPath]; ok {
+		path := filepath.ToSlash(songs[i].RelPath)
+		songs[i].GlobalPlayCount = globalCounts[path]
+		if item, ok := userCounts[path]; ok {
 			songs[i].PlayCount = item.count
 			songs[i].LastPlayed = item.last
 		}
@@ -562,7 +612,12 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error scanning media folders: %v", err), http.StatusInternalServerError)
 		return
 	}
-	songs, err = attachPlays(songs)
+	username, ok := r.Context().Value(authenticatedUsernameKey).(string)
+	if !ok || username == "" {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+	songs, err = attachPlays(songs, username)
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error reading play counts: %v", err), http.StatusInternalServerError)
 		return
@@ -634,7 +689,18 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 		title = title[:300]
 	}
 
-	_, err = db.Exec(`
+	username, ok := r.Context().Value(authenticatedUsernameKey).(string)
+	if !ok || username == "" {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+	tx, err := db.BeginTx(r.Context(), nil)
+	if err != nil {
+		fmt.Printf("Could not begin play transaction for user %q: %v\n", username, err)
+		http.Error(w, "Could not record play", http.StatusInternalServerError)
+		return
+	}
+	_, err = tx.Exec(`
 		INSERT INTO plays (rel_path, title, play_count, last_played_at)
 		VALUES (?, ?, 1, CURRENT_TIMESTAMP)
 		ON CONFLICT(rel_path) DO UPDATE SET
@@ -642,7 +708,26 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 			title = excluded.title,
 			last_played_at = CURRENT_TIMESTAMP
 	`, rel, title)
+	if err == nil {
+		_, err = tx.Exec(`
+			INSERT INTO user_plays (username, rel_path, title, play_count, last_played_at)
+			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
+			ON CONFLICT(username, rel_path) DO UPDATE SET
+				play_count = play_count + 1,
+				title = excluded.title,
+				last_played_at = CURRENT_TIMESTAMP
+		`, username, rel, title)
+	}
 	if err != nil {
+		if rollbackErr := tx.Rollback(); rollbackErr != nil {
+			fmt.Printf("Could not roll back play transaction for user %q: %v\n", username, rollbackErr)
+		}
+		fmt.Printf("Could not write play count for user %q and path %q: %v\n", username, rel, err)
+		http.Error(w, "Could not record play", http.StatusInternalServerError)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		fmt.Printf("Could not commit play transaction for user %q and path %q: %v\n", username, rel, err)
 		http.Error(w, "Could not record play", http.StatusInternalServerError)
 		return
 	}

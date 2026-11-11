@@ -496,7 +496,7 @@
       </header>
 
       <section>
-        <div class="section-head"><h2>Most played</h2></div>
+        <div class="section-head"><h2>Most played ( By You )</h2></div>
         <div class="strip" id="mostPlayed">
           {{if .MostPlayed}} {{range .MostPlayed}}
           <article
@@ -510,7 +510,8 @@
                 <span class="tile-title-text">{{.Title}}</span>
               </div>
               <div class="meta">
-                <span class="play-count">{{.PlayCount}}</span> plays
+                <span class="global-play-count">{{.GlobalPlayCount}}</span>
+                total plays
               </div>
             </div>
           </article>
@@ -779,11 +780,11 @@
         const existing = document.querySelector(
           '.tile[data-file="' + CSS.escape(file) + '"]',
         );
-        const bump = (el) => {
-          const count = el.querySelector(".play-count");
+        const bump = (el, selector) => {
+          const count = el.querySelector(selector);
           if (count) count.textContent = String(Number(count.textContent) + 1);
         };
-        if (track) bump(track);
+        if (track) bump(track, ".global-play-count");
 
         const strip = document.getElementById("mostPlayed");
         const empty = strip.querySelector(".empty");
@@ -812,7 +813,7 @@
           decorateTile(tile);
           strip.prepend(tile);
         }
-        bump(tile);
+        bump(tile, ".play-count");
         const tiles = [...strip.querySelectorAll(".tile")];
         tiles.sort(
           (a, b) =>
@@ -856,10 +857,13 @@
           if (location.search !== nextSearch)
             history.pushState({ file }, "", "/" + nextSearch);
         }
-        activeMedia.play().catch((err) => {
-          console.error("Playback error:", err);
-          syncActive();
-        });
+        activeMedia
+          .play()
+          .then(() => handlePlaybackStarted(media, file))
+          .catch((err) => {
+            console.error("Playback error:", err);
+            syncActive();
+          });
       }
 
       function playNextTrack() {
@@ -882,21 +886,37 @@
         playNextTrack();
       }
 
-      function handlePlaybackStarted(target) {
-        if (!countArmed || !currentFile || !target.src) return;
+      function handlePlaybackStarted(target, expectedFile = currentFile) {
+        if (
+          !countArmed ||
+          !expectedFile ||
+          expectedFile !== currentFile ||
+          !target.src
+        )
+          return;
         const srcFile = new URL(target.src, location.origin).searchParams.get(
           "file",
         );
-        if (srcFile !== currentFile) return;
+        if (srcFile !== expectedFile) return;
         countArmed = false;
         const file = currentFile;
         const title = playerTitle.textContent;
-        bumpCount(file, title);
         fetch("/played", {
           method: "POST",
+          credentials: "same-origin",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: new URLSearchParams({ file, title }),
-        }).catch(() => {});
+        })
+          .then(async (response) => {
+            if (!response.ok) {
+              const details = await response.text();
+              throw new Error(
+                `/played failed (${response.status}): ${details}`,
+              );
+            }
+            bumpCount(file, title);
+          })
+          .catch((err) => console.error("Could not record play:", err));
       }
 
       audio.addEventListener("playing", () => handlePlaybackStarted(audio));
