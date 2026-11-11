@@ -15,7 +15,14 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-const musicRoot = "D:/gaane_novideo"
+var mediaRoots = []string{
+	"D:/gaane_novideo",
+	"D:/gaane",
+	// Add more roots here if needed:
+	// "D:/videos",
+	// "E:/music",
+}
+
 const port = ":8080"
 
 type Song struct {
@@ -96,20 +103,20 @@ func scanMusicFolder(root string) ([]Song, error) {
 				continue
 			}
 			for _, subEntry := range subEntries {
-				if subEntry.IsDir() || !isAudioFile(subEntry.Name()) {
+				if subEntry.IsDir() || !isMediaFile(subEntry.Name()) {
 					continue
 				}
 				info, _ := subEntry.Info()
 				subFull := filepath.Join(fullPath, subEntry.Name())
 				rel, _ := filepath.Rel(root, subFull)
-				songs = append(songs, newSong(subEntry.Name(), rel, info))
+				songs = append(songs, newSong(subEntry.Name(), mediaRelPath(root, rel), info))
 			}
 			continue
 		}
-		if isAudioFile(entry.Name()) {
+		if isMediaFile(entry.Name()) {
 			info, _ := entry.Info()
 			rel, _ := filepath.Rel(root, fullPath)
-			songs = append(songs, newSong(entry.Name(), rel, info))
+			songs = append(songs, newSong(entry.Name(), mediaRelPath(root, rel), info))
 		}
 	}
 
@@ -120,6 +127,42 @@ func scanMusicFolder(root string) ([]Song, error) {
 		return songs[i].Added.After(songs[j].Added)
 	})
 	return songs, nil
+}
+
+func scanAllMediaFolders() ([]Song, error) {
+	if len(mediaRoots) == 0 {
+		return nil, nil
+	}
+
+	var all []Song
+	for _, root := range mediaRoots {
+		items, err := scanMusicFolder(root)
+		if err != nil {
+			continue
+		}
+		all = append(all, items...)
+	}
+
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].Added.Equal(all[j].Added) {
+			return all[i].Title < all[j].Title
+		}
+		return all[i].Added.After(all[j].Added)
+	})
+	return all, nil
+}
+
+func mediaRelPath(root, rel string) string {
+	cleaned := filepath.ToSlash(filepath.Clean(rel))
+	if len(mediaRoots) <= 1 {
+		return cleaned
+	}
+
+	rootName := strings.TrimSpace(filepath.Base(filepath.Clean(root)))
+	if rootName == "" || rootName == "." {
+		rootName = "root"
+	}
+	return rootName + "/" + strings.TrimPrefix(cleaned, "/")
 }
 
 func newSong(filename, rel string, info os.FileInfo) Song {
@@ -160,11 +203,24 @@ func createdAt(info os.FileInfo) time.Time {
 
 func isAudioFile(filename string) bool {
 	switch strings.ToLower(filepath.Ext(filename)) {
-	case ".mp3", ".flac", ".wav", ".m4a":
+	case ".mp3", ".flac", ".wav", ".m4a", ".aac":
 		return true
 	default:
 		return false
 	}
+}
+
+func isVideoFile(filename string) bool {
+	switch strings.ToLower(filepath.Ext(filename)) {
+	case ".mp4", ".m4v", ".mov", ".webm", ".mkv", ".avi", ".wmv", ".flv", ".3gp":
+		return true
+	default:
+		return false
+	}
+}
+
+func isMediaFile(filename string) bool {
+	return isAudioFile(filename) || isVideoFile(filename)
 }
 
 func attachPlays(songs []Song) ([]Song, error) {
@@ -192,6 +248,7 @@ func attachPlays(songs []Song) ([]Song, error) {
 				item.last = parsed
 			}
 		}
+		fmt.Println("Loaded play count for", rel, ":", count, "last played:", item.last)
 		byPath[filepath.ToSlash(rel)] = item
 	}
 	if err := rows.Err(); err != nil {
@@ -199,6 +256,9 @@ func attachPlays(songs []Song) ([]Song, error) {
 	}
 
 	for i := range songs {
+		if i == 0 {
+			fmt.Println(songs[i])
+		}
 		if item, ok := byPath[songs[i].RelPath]; ok {
 			songs[i].PlayCount = item.count
 			songs[i].LastPlayed = item.last
@@ -228,9 +288,9 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	songs, err := scanMusicFolder(musicRoot)
+	songs, err := scanAllMediaFolders()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error scanning music folder: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error scanning media folders: %v", err), http.StatusInternalServerError)
 		return
 	}
 	songs, err = attachPlays(songs)
@@ -238,6 +298,9 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error reading play counts: %v", err), http.StatusInternalServerError)
 		return
 	}
+
+	fmt.Println("[*] Serving index page with", len(songs), "songs")
+	fmt.Println("[*] Most played songs:", len(mostPlayed(songs)))
 
 	tmpl, err := template.ParseFiles("index.html")
 	if err != nil {
@@ -255,22 +318,22 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func streamHandler(w http.ResponseWriter, r *http.Request) {
-	full, _, err := safeAudioPath(r.URL.Query().Get("file"))
+	full, _, err := safeMediaPath(r.URL.Query().Get("file"))
 	if err != nil {
-		http.Error(w, "Song file not found", http.StatusNotFound)
+		http.Error(w, "Media file not found", http.StatusNotFound)
 		return
 	}
 
 	file, err := os.Open(full)
 	if err != nil {
-		http.Error(w, "Song file not found", http.StatusNotFound)
+		http.Error(w, "Media file not found", http.StatusNotFound)
 		return
 	}
 	defer file.Close()
 
 	stat, err := file.Stat()
 	if err != nil {
-		http.Error(w, "Song file not found", http.StatusNotFound)
+		http.Error(w, "Media file not found", http.StatusNotFound)
 		return
 	}
 
@@ -288,7 +351,7 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, rel, err := safeAudioPath(r.Form.Get("file"))
+	_, rel, err := safeMediaPath(r.Form.Get("file"))
 	if err != nil {
 		http.Error(w, "Song file not found", http.StatusNotFound)
 		return
@@ -317,39 +380,61 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func safeAudioPath(rel string) (string, string, error) {
+func safeMediaPath(rel string) (string, string, error) {
 	rel = strings.TrimSpace(rel)
 	if rel == "" || strings.Contains(rel, "\x00") {
 		return "", "", fmt.Errorf("missing file")
 	}
-	rel = filepath.Clean(rel)
-	if rel == "." || strings.HasPrefix(rel, "..") || strings.Contains(rel, ":") {
+
+	normalized := filepath.ToSlash(filepath.Clean(strings.ReplaceAll(rel, "\\", "/")))
+	normalized = strings.TrimPrefix(normalized, "/")
+	if normalized == "." || strings.HasPrefix(normalized, "../") || strings.Contains(normalized, ":") {
 		return "", "", fmt.Errorf("bad path")
 	}
 
-	root, err := filepath.Abs(musicRoot)
+	for _, root := range mediaRoots {
+		rootName := filepath.Base(filepath.Clean(root))
+		prefix := strings.TrimSuffix(filepath.ToSlash(rootName), "/") + "/"
+		if strings.HasPrefix(strings.ToLower(normalized), strings.ToLower(prefix)) {
+			candidate := strings.TrimPrefix(normalized, prefix)
+			return resolveMediaFile(root, candidate)
+		}
+	}
+
+	for _, root := range mediaRoots {
+		if full, relPath, err := resolveMediaFile(root, normalized); err == nil {
+			return full, relPath, nil
+		}
+	}
+	return "", "", fmt.Errorf("media not found")
+}
+
+func resolveMediaFile(root, rel string) (string, string, error) {
+	rootAbs, err := filepath.Abs(root)
 	if err != nil {
 		return "", "", err
 	}
-	full, err := filepath.Abs(filepath.Join(root, rel))
+	candidate := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(rel, "/")))
+	if candidate == "." || strings.HasPrefix(candidate, "..") || strings.Contains(candidate, ":") {
+		return "", "", fmt.Errorf("bad path")
+	}
+
+	full, err := filepath.Abs(filepath.Join(rootAbs, candidate))
 	if err != nil {
 		return "", "", err
 	}
-	prefix := strings.ToLower(root + string(os.PathSeparator))
+	prefix := strings.ToLower(rootAbs + string(os.PathSeparator))
 	if !strings.HasPrefix(strings.ToLower(full), prefix) {
 		return "", "", fmt.Errorf("path escapes root")
 	}
-	if !isAudioFile(full) {
-		return "", "", fmt.Errorf("not audio")
+	if !isMediaFile(full) {
+		return "", "", fmt.Errorf("not media")
 	}
 	if _, err := os.Stat(full); err != nil {
 		return "", "", err
 	}
-	cleaned, err := filepath.Rel(root, full)
-	if err != nil {
-		return "", "", err
-	}
-	return full, filepath.ToSlash(cleaned), nil
+	stored := mediaRelPath(root, candidate)
+	return full, stored, nil
 }
 
 func contentType(path string) string {
@@ -358,9 +443,25 @@ func contentType(path string) string {
 		return "audio/flac"
 	case ".wav":
 		return "audio/wav"
-	case ".m4a":
+	case ".m4a", ".aac":
 		return "audio/mp4"
-	default:
+	case ".mp3":
 		return "audio/mpeg"
+	case ".mp4", ".m4v":
+		return "video/mp4"
+	case ".webm":
+		return "video/webm"
+	case ".mov":
+		return "video/quicktime"
+	case ".mkv":
+		return "video/x-matroska"
+	case ".avi":
+		return "video/x-msvideo"
+	case ".wmv":
+		return "video/x-ms-wmv"
+	case ".flv":
+		return "video/x-flv"
+	default:
+		return "application/octet-stream"
 	}
 }
