@@ -9,12 +9,14 @@ import (
 	"encoding/hex"
 	"fmt"
 	"html/template"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -53,6 +55,14 @@ type Song struct {
 type PageData struct {
 	Songs      []Song
 	MostPlayed []Song
+	Resume     *PlaybackState
+}
+
+type PlaybackState struct {
+	RelPath       string
+	Title         string
+	Position      float64
+	PositionLabel string
 }
 
 var db *sql.DB
@@ -94,6 +104,7 @@ func main() {
 	mux.HandleFunc("/", indexHandler)
 	mux.HandleFunc("/stream", streamHandler)
 	mux.HandleFunc("/played", playedHandler)
+	mux.HandleFunc("/progress", playbackProgressHandler)
 	mux.HandleFunc("/login", loginHandler)
 	mux.HandleFunc("/logout", logoutHandler)
 
@@ -376,6 +387,15 @@ func openDB(path string) (*sql.DB, error) {
 				PRIMARY KEY (username, rel_path)
 			)`)
 	}
+	if err == nil {
+		_, err = conn.Exec(`
+			CREATE TABLE IF NOT EXISTS playback_state (
+				username         TEXT PRIMARY KEY,
+				rel_path         TEXT NOT NULL,
+				position_seconds REAL NOT NULL DEFAULT 0,
+				updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			)`)
+	}
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -602,6 +622,34 @@ func mostPlayed(songs []Song) []Song {
 	return out
 }
 
+func loadPlaybackState(username string) (*PlaybackState, error) {
+	var state PlaybackState
+	err := db.QueryRow(`
+		SELECT rel_path, position_seconds
+		FROM playback_state
+		WHERE username = ?
+	`, username).Scan(&state.RelPath, &state.Position)
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	_, rel, err := safeMediaPath(state.RelPath)
+	if err != nil {
+		return nil, nil
+	}
+	state.RelPath = rel
+	state.Title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
+	state.PositionLabel = formatPlaybackPosition(state.Position)
+	return &state, nil
+}
+
+func formatPlaybackPosition(position float64) string {
+	seconds := int(position)
+	return fmt.Sprintf("%d:%02d", seconds/60, seconds%60)
+}
+
 func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -622,6 +670,11 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Error reading play counts: %v", err), http.StatusInternalServerError)
 		return
 	}
+	resume, err := loadPlaybackState(username)
+	if err != nil {
+		http.Error(w, "Error reading playback position", http.StatusInternalServerError)
+		return
+	}
 
 	fmt.Println("[*] Serving index page with", len(songs), "songs")
 	fmt.Println("[*] Most played songs:", len(mostPlayed(songs)))
@@ -636,6 +689,7 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 	if err := tmpl.Execute(w, PageData{
 		Songs:      songs,
 		MostPlayed: mostPlayed(songs),
+		Resume:     resume,
 	}); err != nil {
 		fmt.Printf("Template execute error: %v\n", err)
 	}
@@ -729,6 +783,48 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 	if err := tx.Commit(); err != nil {
 		fmt.Printf("Could not commit play transaction for user %q and path %q: %v\n", username, rel, err)
 		http.Error(w, "Could not record play", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func playbackProgressHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Bad form", http.StatusBadRequest)
+		return
+	}
+	username, ok := r.Context().Value(authenticatedUsernameKey).(string)
+	if !ok || username == "" {
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+		return
+	}
+	position, err := strconv.ParseFloat(r.Form.Get("position"), 64)
+	if err != nil || math.IsNaN(position) || math.IsInf(position, 0) || position < 0 || position > 7*24*60*60 {
+		http.Error(w, "Invalid playback position", http.StatusBadRequest)
+		return
+	}
+	_, rel, err := safeMediaPath(r.Form.Get("file"))
+	if err != nil {
+		http.Error(w, "Media file not found", http.StatusNotFound)
+		return
+	}
+	_, err = db.Exec(`
+		INSERT INTO playback_state (username, rel_path, position_seconds, updated_at)
+		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+		ON CONFLICT(username) DO UPDATE SET
+			rel_path = excluded.rel_path,
+			position_seconds = excluded.position_seconds,
+			updated_at = CURRENT_TIMESTAMP
+	`, username, rel, position)
+	if err != nil {
+		fmt.Printf("Could not save playback position for user %q: %v\n", username, err)
+		http.Error(w, "Could not save playback position", http.StatusInternalServerError)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

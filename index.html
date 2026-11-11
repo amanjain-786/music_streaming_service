@@ -494,6 +494,15 @@
           <button class="icon-btn" type="submit">Log out</button>
         </form>
       </header>
+      {{if .Resume}}
+      <div
+        id="savedPlaybackState"
+        data-file="{{.Resume.RelPath}}"
+        data-title="{{.Resume.Title}}"
+        data-position="{{printf "%.3f" .Resume.Position}}"
+        hidden
+      ></div>
+      {{end}}
 
       <section>
         <div class="section-head"><h2>Most played ( By You )</h2></div>
@@ -653,6 +662,7 @@
       const playerTitle = document.getElementById("playerTitle");
       const videoSize = document.getElementById("videoSize");
       const videoSizeValue = document.getElementById("videoSizeValue");
+      const savedPlaybackState = document.getElementById("savedPlaybackState");
 
       function decorateTile(tile) {
         const file = tile.dataset.file || "";
@@ -844,7 +854,7 @@
         tiles.forEach((item) => strip.appendChild(item));
       }
 
-      function playTrack(file, title, fromHistory) {
+      function playTrack(file, title, fromHistory, startAt = 0, startPaused = false) {
         if (!file) return;
         const media = mediaFor(file);
         if (currentFile === file && media.src) {
@@ -856,10 +866,25 @@
 
         audio.pause();
         video.pause();
+        if (currentFile && activeMedia.src) savePlaybackProgress();
         activeMedia = media;
         audio.src = "";
         video.src = "";
         countArmed = true;
+        if (startPaused) media.preload = "metadata";
+        if (startAt > 0) {
+          media.addEventListener(
+            "loadedmetadata",
+            () => {
+              if (currentFile !== file || !Number.isFinite(media.duration)) return;
+              media.currentTime = Math.min(
+                startAt,
+                Math.max(0, media.duration - 0.1),
+              );
+            },
+            { once: true },
+          );
+        }
         activeMedia.src = "/stream?file=" + encodeURIComponent(file);
         currentFile = file;
         player.classList.remove("is-video");
@@ -888,6 +913,11 @@
           if (location.search !== nextSearch)
             history.pushState({ file }, "", "/" + nextSearch);
         }
+        if (startPaused) {
+          activeMedia.load();
+          syncActive();
+          return;
+        }
         activeMedia
           .play()
           .then(() => handlePlaybackStarted(media, file))
@@ -895,6 +925,29 @@
             console.error("Playback error:", err);
             syncActive();
           });
+      }
+
+      function savePlaybackProgress(keepalive = false) {
+        if (!currentFile || !activeMedia.src || !Number.isFinite(activeMedia.currentTime)) {
+          return;
+        }
+        const request = fetch("/progress", {
+          method: "POST",
+          credentials: "same-origin",
+          headers: { "Content-Type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            file: currentFile,
+            position: String(activeMedia.currentTime),
+          }),
+          keepalive,
+        });
+        if (!keepalive) {
+          request.then((response) => {
+            if (!response.ok) {
+              console.error("Could not save playback position:", response.status);
+            }
+          }).catch((err) => console.error("Could not save playback position:", err));
+        }
       }
 
       function playAdjacentTrack(direction) {
@@ -1037,12 +1090,18 @@
       audio.addEventListener("timeupdate", paintTime);
       audio.addEventListener("loadedmetadata", paintTime);
       audio.addEventListener("play", syncActive);
-      audio.addEventListener("pause", syncActive);
+      audio.addEventListener("pause", () => {
+        syncActive();
+        if (activeMedia === audio) savePlaybackProgress();
+      });
       audio.addEventListener("ended", handleMediaEnded);
       video.addEventListener("timeupdate", paintTime);
       video.addEventListener("loadedmetadata", paintTime);
       video.addEventListener("play", syncActive);
-      video.addEventListener("pause", syncActive);
+      video.addEventListener("pause", () => {
+        syncActive();
+        if (activeMedia === video) savePlaybackProgress();
+      });
       video.addEventListener("ended", handleMediaEnded);
 
       function filterLibrary() {
@@ -1065,6 +1124,16 @@
       search.addEventListener("input", filterLibrary);
       mediaFilter.addEventListener("change", filterLibrary);
 
+      window.setInterval(() => {
+        if (activeMedia && !activeMedia.paused && !activeMedia.ended) {
+          savePlaybackProgress();
+        }
+      }, 5000);
+      window.addEventListener("pagehide", () => savePlaybackProgress(true));
+      document.addEventListener("visibilitychange", () => {
+        if (document.visibilityState === "hidden") savePlaybackProgress(true);
+      });
+
       listView.addEventListener("click", () => setLibraryView("list"));
       gridView.addEventListener("click", () => setLibraryView("grid"));
 
@@ -1082,7 +1151,17 @@
       document.querySelectorAll(".tile").forEach((tile) => decorateTile(tile));
 
       const initial = new URLSearchParams(location.search).get("song");
-      if (initial) playTrack(initial, titleFor(initial), true);
+      if (savedPlaybackState) {
+        playTrack(
+          savedPlaybackState.dataset.file,
+          savedPlaybackState.dataset.title,
+          true,
+          Number(savedPlaybackState.dataset.position),
+          true,
+        );
+      } else if (initial) {
+        playTrack(initial, titleFor(initial), true);
+      }
     </script>
   </body>
 </html>
