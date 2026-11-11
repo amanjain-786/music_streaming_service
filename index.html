@@ -579,7 +579,15 @@
 
     <div class="player" id="player">
       <div class="player-row">
-        <button class="icon-btn" id="back10" type="button">−10s</button>
+        <button
+          class="icon-btn"
+          id="previousTrack"
+          type="button"
+          aria-label="Previous track"
+          title="Previous track"
+        >
+          &lt;&lt;
+        </button>
         <button
           class="transport"
           id="playPause"
@@ -588,7 +596,15 @@
         >
           ▶
         </button>
-        <button class="icon-btn" id="fwd10" type="button">+10s</button>
+        <button
+          class="icon-btn"
+          id="nextTrack"
+          type="button"
+          aria-label="Next track"
+          title="Next track"
+        >
+          &gt;&gt;
+        </button>
         <div class="player-title" id="playerTitle">Nothing playing</div>
         <input
           class="volume"
@@ -771,6 +787,11 @@
           mark.textContent = on && playing ? "⏸" : "▶";
         });
         playPause.textContent = playing ? "⏸" : "▶";
+        if ("mediaSession" in navigator) {
+          navigator.mediaSession.playbackState = activeMedia.paused
+            ? "paused"
+            : "playing";
+        }
       }
 
       function bumpCount(file, title) {
@@ -850,6 +871,16 @@
         }
         player.classList.add("is-open");
         playerTitle.textContent = title || titleFor(file);
+        if (
+          "mediaSession" in navigator &&
+          typeof MediaMetadata !== "undefined"
+        ) {
+          navigator.mediaSession.metadata = new MediaMetadata({
+            title: title || titleFor(file),
+            artist: "My Music",
+            album: "Personal Library",
+          });
+        }
         if (!fromHistory) {
           const next = new URLSearchParams();
           next.set("song", file);
@@ -866,19 +897,51 @@
           });
       }
 
-      function playNextTrack() {
+      function playAdjacentTrack(direction) {
         const tracks = [...allSongs.querySelectorAll(".track")];
         const currentIndex = tracks.findIndex(
           (track) => track.dataset.file === currentFile,
         );
         if (currentIndex < 0) return;
 
-        const nextTrack = tracks
-          .slice(currentIndex + 1)
-          .find((track) => !track.hidden);
-        if (nextTrack) {
-          playTrack(nextTrack.dataset.file, nextTrack.dataset.title, false);
+        for (
+          let index = currentIndex + direction;
+          index >= 0 && index < tracks.length;
+          index += direction
+        ) {
+          const track = tracks[index];
+          if (!track.hidden) {
+            playTrack(track.dataset.file, track.dataset.title, false);
+            return;
+          }
         }
+      }
+
+      function playNextTrack() {
+        playAdjacentTrack(1);
+      }
+
+      // Connect headphone and browser media controls
+      if ("mediaSession" in navigator) {
+        const mediaSession = navigator.mediaSession;
+
+        mediaSession.setActionHandler("nexttrack", () => {
+          playNextTrack();
+        });
+
+        mediaSession.setActionHandler("previoustrack", () => {
+          playAdjacentTrack(-1);
+        });
+
+        mediaSession.setActionHandler("play", () => {
+          if (activeMedia.src) {
+            activeMedia.play().catch(console.error);
+          }
+        });
+
+        mediaSession.setActionHandler("pause", () => {
+          activeMedia.pause();
+        });
       }
 
       function handleMediaEnded() {
@@ -939,17 +1002,12 @@
         syncActive();
       });
 
-      document.getElementById("back10").addEventListener("click", () => {
-        if (!activeMedia.src) return;
-        activeMedia.currentTime = Math.max(0, activeMedia.currentTime - 10);
-      });
-      document.getElementById("fwd10").addEventListener("click", () => {
-        if (!activeMedia.src || !Number.isFinite(activeMedia.duration)) return;
-        activeMedia.currentTime = Math.min(
-          activeMedia.duration,
-          activeMedia.currentTime + 10,
-        );
-      });
+      document
+        .getElementById("previousTrack")
+        .addEventListener("click", () => playAdjacentTrack(-1));
+      document
+        .getElementById("nextTrack")
+        .addEventListener("click", () => playAdjacentTrack(1));
 
       volume.addEventListener("input", () => {
         audio.volume = Number(volume.value);
