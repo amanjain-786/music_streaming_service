@@ -1,14 +1,21 @@
 package main
 
 import (
+	"bufio"
+	"crypto/rand"
+	"crypto/subtle"
 	"database/sql"
+	"encoding/hex"
 	"fmt"
 	"html/template"
+	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -24,6 +31,11 @@ var mediaRoots = []string{
 }
 
 const port = ":8080"
+const credentialsFile = "users.txt"
+const sessionCookieName = "music_session"
+const sessionLifetime = 24 * time.Hour
+const loginRateLimit = 40
+const loginRateWindow = time.Minute
 
 type Song struct {
 	Title      string
@@ -42,6 +54,20 @@ type PageData struct {
 }
 
 var db *sql.DB
+var sessions = struct {
+	sync.Mutex
+	items map[string]time.Time
+}{items: make(map[string]time.Time)}
+var loginRateLimits = struct {
+	sync.Mutex
+	clients     map[string]loginRateState
+	lastCleanup time.Time
+}{clients: make(map[string]loginRateState)}
+
+type loginRateState struct {
+	tokens    float64
+	updatedAt time.Time
+}
 
 func main() {
 	var err error
@@ -52,14 +78,257 @@ func main() {
 	}
 	defer db.Close()
 
-	http.HandleFunc("/", indexHandler)
-	http.HandleFunc("/stream", streamHandler)
-	http.HandleFunc("/played", playedHandler)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", indexHandler)
+	mux.HandleFunc("/stream", streamHandler)
+	mux.HandleFunc("/played", playedHandler)
+	mux.HandleFunc("/login", loginHandler)
+	mux.HandleFunc("/logout", logoutHandler)
 
 	fmt.Printf("[*] Music server started. Open http://localhost%s in your browser\n", port)
-	if err := http.ListenAndServe(port, nil); err != nil {
+	if err := http.ListenAndServe(port, authMiddleware(mux)); err != nil {
 		fmt.Printf("Server failed: %v\n", err)
 	}
+}
+
+func authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/login" {
+			if r.Method == http.MethodPost {
+				allowed, retryAfter := allowLoginAttempt(r.RemoteAddr)
+				if !allowed {
+					seconds := int(retryAfter / time.Second)
+					if retryAfter%time.Second != 0 {
+						seconds++
+					}
+					if seconds < 1 {
+						seconds = 1
+					}
+					w.Header().Set("Retry-After", fmt.Sprint(seconds))
+					http.Error(w, "Too many login attempts", http.StatusTooManyRequests)
+					return
+				}
+			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if authenticated(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		if r.Method == http.MethodGet || r.Method == http.MethodHead {
+			target := "/login?next=" + url.QueryEscape(r.URL.RequestURI())
+			http.Redirect(w, r, target, http.StatusSeeOther)
+			return
+		}
+		http.Error(w, "Authentication required", http.StatusUnauthorized)
+	})
+}
+
+func allowLoginAttempt(remoteAddr string) (bool, time.Duration) {
+	clientIP, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		clientIP = remoteAddr
+	}
+	now := time.Now()
+
+	loginRateLimits.Lock()
+	defer loginRateLimits.Unlock()
+
+	if now.Sub(loginRateLimits.lastCleanup) >= loginRateWindow {
+		for ip, state := range loginRateLimits.clients {
+			if now.Sub(state.updatedAt) >= loginRateWindow {
+				delete(loginRateLimits.clients, ip)
+			}
+		}
+		loginRateLimits.lastCleanup = now
+	}
+
+	state, ok := loginRateLimits.clients[clientIP]
+	if !ok {
+		state = loginRateState{tokens: loginRateLimit}
+	} else {
+		elapsed := now.Sub(state.updatedAt).Seconds()
+		state.tokens += elapsed * loginRateLimit / loginRateWindow.Seconds()
+		if state.tokens > loginRateLimit {
+			state.tokens = loginRateLimit
+		}
+	}
+	state.updatedAt = now
+	if state.tokens < 1 {
+		loginRateLimits.clients[clientIP] = state
+		waitSeconds := (1 - state.tokens) * loginRateWindow.Seconds() / loginRateLimit
+		return false, time.Duration(waitSeconds * float64(time.Second))
+	}
+	state.tokens--
+	loginRateLimits.clients[clientIP] = state
+	return true, 0
+}
+
+func authenticated(r *http.Request) bool {
+	cookie, err := r.Cookie(sessionCookieName)
+	if err != nil {
+		return false
+	}
+
+	sessions.Lock()
+	defer sessions.Unlock()
+	expires, ok := sessions.items[cookie.Value]
+	if !ok {
+		return false
+	}
+	if time.Now().After(expires) {
+		delete(sessions.items, cookie.Value)
+		return false
+	}
+	return true
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	next := safeNextPath(r.URL.Query().Get("next"))
+	switch r.Method {
+	case http.MethodGet:
+		renderLogin(w, http.StatusOK, "", next)
+	case http.MethodPost:
+		r.Body = http.MaxBytesReader(w, r.Body, 4096)
+		if err := r.ParseForm(); err != nil {
+			renderLogin(w, http.StatusBadRequest, "Invalid login request.", next)
+			return
+		}
+		next = safeNextPath(r.Form.Get("next"))
+		username := strings.TrimSpace(r.Form.Get("username"))
+		password := r.Form.Get("password")
+		ok, err := checkCredentials(username, password)
+		if err != nil {
+			fmt.Printf("Authentication configuration error: %v\n", err)
+			http.Error(w, "Authentication is not configured. Check users.txt.", http.StatusServiceUnavailable)
+			return
+		}
+		if !ok {
+			renderLogin(w, http.StatusUnauthorized, "Invalid username or password.", next)
+			return
+		}
+
+		token := make([]byte, 32)
+		if _, err := rand.Read(token); err != nil {
+			http.Error(w, "Could not create session", http.StatusInternalServerError)
+			return
+		}
+		sessionID := hex.EncodeToString(token)
+		sessions.Lock()
+		sessions.items[sessionID] = time.Now().Add(sessionLifetime)
+		sessions.Unlock()
+
+		http.SetCookie(w, &http.Cookie{
+			Name:     sessionCookieName,
+			Value:    sessionID,
+			Path:     "/",
+			Expires:  time.Now().Add(sessionLifetime),
+			HttpOnly: true,
+			Secure:   r.TLS != nil,
+			SameSite: http.SameSiteStrictMode,
+		})
+		http.Redirect(w, r, next, http.StatusSeeOther)
+	default:
+		w.Header().Set("Allow", "GET, POST")
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func renderLogin(w http.ResponseWriter, status int, message, next string) {
+	tmpl, err := template.ParseFiles("login.html")
+	if err != nil {
+		http.Error(w, "Login page unavailable", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
+	if err := tmpl.Execute(w, struct {
+		Message string
+		Next    string
+	}{Message: message, Next: next}); err != nil {
+		fmt.Printf("Login template error: %v\n", err)
+	}
+}
+
+func checkCredentials(username, password string) (bool, error) {
+	if username == "" || password == "" {
+		return false, nil
+	}
+
+	file, err := os.Open(credentialsFile)
+	if err != nil {
+		return false, err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	lineNumber := 0
+	accountCount := 0
+	matched := false
+	for scanner.Scan() {
+		lineNumber++
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if strings.TrimSpace(line) == "" || strings.HasPrefix(strings.TrimSpace(line), "#") {
+			continue
+		}
+		line = strings.TrimLeft(line, " \t")
+		separator := strings.IndexAny(line, " \t")
+		if separator <= 0 {
+			return false, fmt.Errorf("invalid entry on line %d; expected username followed by a password", lineNumber)
+		}
+		storedUsername := line[:separator]
+		storedPassword := strings.TrimLeft(line[separator:], " \t")
+		if storedPassword == "" {
+			return false, fmt.Errorf("invalid entry on line %d; expected username followed by a password", lineNumber)
+		}
+		accountCount++
+		if storedUsername == username && subtle.ConstantTimeCompare([]byte(storedPassword), []byte(password)) == 1 {
+			matched = true
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return false, err
+	}
+	if accountCount == 0 {
+		return false, fmt.Errorf("no accounts configured")
+	}
+	return matched, nil
+}
+
+func safeNextPath(candidate string) string {
+	if candidate == "" || !strings.HasPrefix(candidate, "/") || strings.HasPrefix(candidate, "//") || strings.Contains(candidate, "\\") {
+		return "/"
+	}
+	parsed, err := url.Parse(candidate)
+	if err != nil || parsed.IsAbs() || parsed.Host != "" {
+		return "/"
+	}
+	return candidate
+}
+
+func logoutHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "POST required", http.StatusMethodNotAllowed)
+		return
+	}
+	if cookie, err := r.Cookie(sessionCookieName); err == nil {
+		sessions.Lock()
+		delete(sessions.items, cookie.Value)
+		sessions.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     sessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		Secure:   r.TLS != nil,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.Redirect(w, r, "/login", http.StatusSeeOther)
 }
 
 func openDB(path string) (*sql.DB, error) {

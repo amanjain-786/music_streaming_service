@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Sign in | Music</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090d16;
+        --surface: #121a2b;
+        --line: rgba(148, 163, 184, 0.2);
+        --text: #f8fafc;
+        --muted: #94a3b8;
+        --accent: #7dd3fc;
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 24px;
+        background:
+          radial-gradient(
+            800px 400px at 10% 0%,
+            rgba(14, 165, 233, 0.16),
+            transparent 60%
+          ),
+          var(--bg);
+        color: var(--text);
+        font-family: "Segoe UI", sans-serif;
+      }
+      form {
+        width: min(360px, 100%);
+        display: grid;
+        gap: 14px;
+        padding: 28px;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        background: var(--surface);
+      }
+      h1 {
+        margin: 0 0 4px;
+        font-size: 1.4rem;
+      }
+      label {
+        display: grid;
+        gap: 6px;
+        color: var(--muted);
+        font-size: 0.86rem;
+      }
+      input {
+        width: 100%;
+        padding: 11px 12px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        outline: none;
+        background: #090d16;
+        color: var(--text);
+        font: inherit;
+      }
+      input:focus {
+        border-color: var(--accent);
+      }
+      button {
+        margin-top: 4px;
+        padding: 11px 14px;
+        border: 0;
+        border-radius: 8px;
+        background: var(--accent);
+        color: #082f49;
+        font: inherit;
+        font-weight: 700;
+        cursor: pointer;
+      }
+      .message {
+        margin: 0;
+        color: #fca5a5;
+        font-size: 0.88rem;
+      }
+    </style>
+  </head>
+  <body>
+    <form method="post" action="/login">
+      <h1>Sign in</h1>
+      {{if .Message}}
+      <p class="message" role="alert">{{.Message}}</p>
+      {{end}}
+      <label>
+        Username
+        <input
+          name="username"
+          type="text"
+          autocomplete="username"
+          required
+          autofocus
+        />
+      </label>
+      <label>
+        Password
+        <input
+          name="password"
+          type="password"
+          autocomplete="current-password"
+          required
+        />
+      </label>
+      <input name="next" type="hidden" value="{{.Next}}" />
+      <button type="submit">Continue</button>
+    </form>
+  </body>
+</html>

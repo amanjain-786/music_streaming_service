@@ -490,6 +490,9 @@
         <p class="lead">
           Newest files first. The top row fills in as you play.
         </p>
+        <form method="post" action="/logout">
+          <button class="icon-btn" type="submit">Log out</button>
+        </form>
       </header>
 
       <section>
@@ -859,6 +862,26 @@
         });
       }
 
+      function playNextTrack() {
+        const tracks = [...allSongs.querySelectorAll(".track")];
+        const currentIndex = tracks.findIndex(
+          (track) => track.dataset.file === currentFile,
+        );
+        if (currentIndex < 0) return;
+
+        const nextTrack = tracks
+          .slice(currentIndex + 1)
+          .find((track) => !track.hidden);
+        if (nextTrack) {
+          playTrack(nextTrack.dataset.file, nextTrack.dataset.title, false);
+        }
+      }
+
+      function handleMediaEnded() {
+        syncActive();
+        playNextTrack();
+      }
+
       function handlePlaybackStarted(target) {
         if (!countArmed || !currentFile || !target.src) return;
         const srcFile = new URL(target.src, location.origin).searchParams.get(
@@ -937,12 +960,12 @@
       audio.addEventListener("loadedmetadata", paintTime);
       audio.addEventListener("play", syncActive);
       audio.addEventListener("pause", syncActive);
-      audio.addEventListener("ended", syncActive);
+      audio.addEventListener("ended", handleMediaEnded);
       video.addEventListener("timeupdate", paintTime);
       video.addEventListener("loadedmetadata", paintTime);
       video.addEventListener("play", syncActive);
       video.addEventListener("pause", syncActive);
-      video.addEventListener("ended", syncActive);
+      video.addEventListener("ended", handleMediaEnded);
 
       function filterLibrary() {
         const term = search.value.trim().toLowerCase();
