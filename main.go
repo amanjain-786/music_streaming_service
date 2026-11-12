@@ -4,9 +4,11 @@ import (
 	"bufio"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"database/sql"
 	"encoding/hex"
+	"flag"
 	"fmt"
 	"html/template"
 	"math"
@@ -19,28 +21,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"musicstream/internal/catalog"
+	appconfig "musicstream/internal/config"
 
 	_ "modernc.org/sqlite"
 )
 
-var mediaRoots = []string{
-	"D:/gaane_novideo",
-	"D:/gaane",
-	// Add more roots here if needed:
-	// "D:/videos",
-	// "E:/music",
-}
+var mediaRoots []string
+var port string
+var credentialsFile string
 
-const port = ":8080"
-const credentialsFile = "users.txt"
 const sessionCookieName = "music_session"
 const sessionLifetime = 24 * time.Hour
 const loginRateLimit = 40
 const loginRateWindow = time.Minute
 
 type Song struct {
+	ID              int64
 	Title           string
 	Initial         string
 	RelPath         string
@@ -59,6 +58,7 @@ type PageData struct {
 }
 
 type PlaybackState struct {
+	SongID        int64
 	RelPath       string
 	Title         string
 	Position      float64
@@ -92,13 +92,71 @@ type loginRateState struct {
 }
 
 func main() {
-	var err error
-	db, err = openDB("plays.db")
-	if err != nil {
-		fmt.Printf("Database failed: %v\n", err)
+	if err := run(os.Args[1:]); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
+}
+
+func run(args []string) error {
+	command := "server"
+	commandArgs := args
+	if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
+		command = args[0]
+		commandArgs = args[1:]
+	}
+	if command != "server" && command != "scan" && command != "reset-play-data" {
+		return fmt.Errorf("unknown command %q; use server, scan, or reset-play-data", command)
+	}
+
+	flags := flag.NewFlagSet(command, flag.ContinueOnError)
+	configPath := flags.String("config", "config.json", "path to the shared JSON config")
+	confirmReset := flags.Bool("yes", false, "confirm destructive play-data reset")
+	if err := flags.Parse(commandArgs); err != nil {
+		return err
+	}
+	if command == "reset-play-data" && !*confirmReset {
+		return fmt.Errorf("reset-play-data deletes play counts and resume positions; rerun with --yes to confirm")
+	}
+	if flags.NArg() != 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(flags.Args(), " "))
+	}
+
+	cfg, err := appconfig.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	mediaRoots = cfg.MediaRoots
+	port = cfg.ListenAddress
+	credentialsFile = cfg.Credentials
+
+	db, err = openDB(cfg.DatabasePath)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
 	defer db.Close()
+
+	if command == "reset-play-data" {
+		if err := resetPlayData(context.Background(), db); err != nil {
+			return err
+		}
+		fmt.Println("Play counts and resume positions were cleared; the catalog was preserved.")
+		return nil
+	}
+
+	if command == "scan" {
+		result, err := catalog.Scan(context.Background(), db, mediaRoots)
+		if err != nil {
+			return err
+		}
+		for _, duplicate := range result.Duplicates {
+			fmt.Printf("Duplicate content %s: %q matches %q\n", duplicate.ContentHash, duplicate.Path, duplicate.OriginalPath)
+		}
+		fmt.Printf("Catalog scan complete: %d root(s), %d file(s), %d hashed, %d unchanged, %d unavailable location(s).\n",
+			result.RootsScanned, result.FilesFound, result.FilesHashed,
+			result.FilesUnchanged, result.LocationsMissing)
+		return nil
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", indexHandler)
@@ -110,8 +168,9 @@ func main() {
 
 	fmt.Printf("[*] Music server started. Open http://localhost%s in your browser\n", port)
 	if err := http.ListenAndServe(port, authMiddleware(mux)); err != nil {
-		fmt.Printf("Server failed: %v\n", err)
+		return fmt.Errorf("server failed: %w", err)
 	}
+	return nil
 }
 
 func authMiddleware(next http.Handler) http.Handler {
@@ -359,7 +418,17 @@ func logoutHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func openDB(path string) (*sql.DB, error) {
-	dsn := "file:" + path + "?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)"
+	databasePath := filepath.ToSlash(path)
+	if filepath.VolumeName(path) != "" && !strings.HasPrefix(databasePath, "/") {
+		databasePath = "/" + databasePath
+	}
+	databaseURL := url.URL{Scheme: "file", Path: databasePath}
+	query := databaseURL.Query()
+	query.Add("_pragma", "busy_timeout(5000)")
+	query.Add("_pragma", "journal_mode(WAL)")
+	query.Add("_pragma", "foreign_keys(ON)")
+	databaseURL.RawQuery = query.Encode()
+	dsn := databaseURL.String()
 	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, err
@@ -369,32 +438,30 @@ func openDB(path string) (*sql.DB, error) {
 		conn.Close()
 		return nil, err
 	}
-	_, err = conn.Exec(`
-		CREATE TABLE IF NOT EXISTS plays (
-			rel_path       TEXT PRIMARY KEY,
-			title          TEXT NOT NULL,
-			play_count     INTEGER NOT NULL DEFAULT 0,
-			last_played_at DATETIME
-		)`)
+	err = catalog.EnsureSchema(context.Background(), conn)
 	if err == nil {
 		_, err = conn.Exec(`
-			CREATE TABLE IF NOT EXISTS user_plays (
+			CREATE TABLE IF NOT EXISTS song_play_counts (
+				song_id        INTEGER PRIMARY KEY REFERENCES songs(id),
+				play_count     INTEGER NOT NULL DEFAULT 0,
+				last_played_at DATETIME
+			);
+
+			CREATE TABLE IF NOT EXISTS user_song_plays (
 				username       TEXT NOT NULL,
-				rel_path       TEXT NOT NULL,
-				title          TEXT NOT NULL,
+				song_id        INTEGER NOT NULL REFERENCES songs(id),
 				play_count     INTEGER NOT NULL DEFAULT 0,
 				last_played_at DATETIME,
-				PRIMARY KEY (username, rel_path)
-			)`)
-	}
-	if err == nil {
-		_, err = conn.Exec(`
-			CREATE TABLE IF NOT EXISTS playback_state (
+				PRIMARY KEY (username, song_id)
+			);
+
+			CREATE TABLE IF NOT EXISTS user_playback_state (
 				username         TEXT PRIMARY KEY,
-				rel_path         TEXT NOT NULL,
+				song_id          INTEGER NOT NULL REFERENCES songs(id),
 				position_seconds REAL NOT NULL DEFAULT 0,
 				updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-			)`)
+			);
+		`)
 	}
 	if err != nil {
 		conn.Close()
@@ -403,69 +470,49 @@ func openDB(path string) (*sql.DB, error) {
 	return conn, nil
 }
 
-func scanMusicFolder(root string) ([]Song, error) {
-	var songs []Song
+func resetPlayData(ctx context.Context, conn *sql.DB) error {
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
 
-	entries, err := os.ReadDir(root)
+	for _, table := range []string{"user_playback_state", "user_song_plays", "song_play_counts"} {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM `+table); err != nil {
+			return fmt.Errorf("clear %s: %w", table, err)
+		}
+	}
+	for _, table := range []string{"playback_state", "user_plays", "plays"} {
+		if _, err := tx.ExecContext(ctx, `DROP TABLE IF EXISTS `+table); err != nil {
+			return fmt.Errorf("drop legacy table %s: %w", table, err)
+		}
+	}
+	return tx.Commit()
+}
+
+func loadCatalogSongs() ([]Song, error) {
+	media, err := catalog.ListAvailable(context.Background(), db)
 	if err != nil {
 		return nil, err
 	}
-
-	for _, entry := range entries {
-		fullPath := filepath.Join(root, entry.Name())
-		if entry.IsDir() {
-			subEntries, err := os.ReadDir(fullPath)
-			if err != nil {
-				continue
-			}
-			for _, subEntry := range subEntries {
-				if subEntry.IsDir() || !isMediaFile(subEntry.Name()) {
-					continue
-				}
-				info, _ := subEntry.Info()
-				subFull := filepath.Join(fullPath, subEntry.Name())
-				rel, _ := filepath.Rel(root, subFull)
-				songs = append(songs, newSong(subEntry.Name(), mediaRelPath(root, rel), info))
-			}
-			continue
+	songs := make([]Song, 0, len(media))
+	for _, item := range media {
+		rel := mediaRelPath(item.RootPath, item.RelativePath)
+		folder := filepath.ToSlash(filepath.Dir(rel))
+		if folder == "." {
+			folder = ""
 		}
-		if isMediaFile(entry.Name()) {
-			info, _ := entry.Info()
-			rel, _ := filepath.Rel(root, fullPath)
-			songs = append(songs, newSong(entry.Name(), mediaRelPath(root, rel), info))
-		}
+		songs = append(songs, Song{
+			ID:         item.ID,
+			Title:      item.Title,
+			Initial:    initial(item.Title),
+			RelPath:    rel,
+			Folder:     folder,
+			Added:      item.ModifiedAt,
+			AddedLabel: item.ModifiedAt.Format("02 Jan 2006"),
+		})
 	}
-
-	sort.Slice(songs, func(i, j int) bool {
-		if songs[i].Added.Equal(songs[j].Added) {
-			return songs[i].Title < songs[j].Title
-		}
-		return songs[i].Added.After(songs[j].Added)
-	})
 	return songs, nil
-}
-
-func scanAllMediaFolders() ([]Song, error) {
-	if len(mediaRoots) == 0 {
-		return nil, nil
-	}
-
-	var all []Song
-	for _, root := range mediaRoots {
-		items, err := scanMusicFolder(root)
-		if err != nil {
-			continue
-		}
-		all = append(all, items...)
-	}
-
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].Added.Equal(all[j].Added) {
-			return all[i].Title < all[j].Title
-		}
-		return all[i].Added.After(all[j].Added)
-	})
-	return all, nil
 }
 
 func mediaRelPath(root, rel string) string {
@@ -473,30 +520,22 @@ func mediaRelPath(root, rel string) string {
 	if len(mediaRoots) <= 1 {
 		return cleaned
 	}
-
-	rootName := strings.TrimSpace(filepath.Base(filepath.Clean(root)))
-	if rootName == "" || rootName == "." {
-		rootName = "root"
-	}
-	return rootName + "/" + strings.TrimPrefix(cleaned, "/")
+	return mediaRootLabel(root) + "/" + strings.TrimPrefix(cleaned, "/")
 }
 
-func newSong(filename, rel string, info os.FileInfo) Song {
-	added := createdAt(info)
-	folder := ""
-	dir := filepath.Dir(rel)
-	if dir != "." {
-		folder = filepath.ToSlash(dir)
+func mediaRootLabel(root string) string {
+	rootName := filepath.Base(filepath.Clean(root))
+	if rootName == "" || rootName == "." || rootName == string(filepath.Separator) {
+		rootName = "root"
 	}
-	title := strings.TrimSuffix(filename, filepath.Ext(filename))
-	return Song{
-		Title:      title,
-		Initial:    initial(title),
-		RelPath:    filepath.ToSlash(rel),
-		Folder:     folder,
-		Added:      added,
-		AddedLabel: added.Format("02 Jan 2006"),
+	for _, candidate := range mediaRoots {
+		if !strings.EqualFold(filepath.Clean(candidate), filepath.Clean(root)) &&
+			strings.EqualFold(filepath.Base(filepath.Clean(candidate)), rootName) {
+			fingerprint := sha256.Sum256([]byte(strings.ToLower(filepath.Clean(root))))
+			return rootName + "-" + hex.EncodeToString(fingerprint[:4])
+		}
 	}
+	return rootName
 }
 
 func initial(title string) string {
@@ -505,16 +544,6 @@ func initial(title string) string {
 		return "?"
 	}
 	return string(runes[0])
-}
-
-func createdAt(info os.FileInfo) time.Time {
-	if info == nil {
-		return time.Now()
-	}
-	if sys, ok := info.Sys().(*syscall.Win32FileAttributeData); ok && sys != nil {
-		return time.Unix(0, sys.CreationTime.Nanoseconds())
-	}
-	return info.ModTime()
 }
 
 func isAudioFile(filename string) bool {
@@ -540,19 +569,19 @@ func isMediaFile(filename string) bool {
 }
 
 func attachPlays(songs []Song, username string) ([]Song, error) {
-	rows, err := db.Query(`SELECT rel_path, play_count FROM plays`)
+	rows, err := db.Query(`SELECT song_id, play_count FROM song_play_counts`)
 	if err != nil {
 		return nil, err
 	}
-	globalCounts := map[string]int{}
+	globalCounts := map[int64]int{}
 	for rows.Next() {
-		var rel string
+		var songID int64
 		var count int
-		if err := rows.Scan(&rel, &count); err != nil {
+		if err := rows.Scan(&songID, &count); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		globalCounts[filepath.ToSlash(rel)] = count
+		globalCounts[songID] = count
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -562,7 +591,7 @@ func attachPlays(songs []Song, username string) ([]Song, error) {
 		return nil, err
 	}
 
-	rows, err = db.Query(`SELECT rel_path, play_count, last_played_at FROM user_plays WHERE username = ?`, username)
+	rows, err = db.Query(`SELECT song_id, play_count, last_played_at FROM user_song_plays WHERE username = ?`, username)
 	if err != nil {
 		return nil, err
 	}
@@ -570,12 +599,12 @@ func attachPlays(songs []Song, username string) ([]Song, error) {
 		count int
 		last  time.Time
 	}
-	userCounts := map[string]userStat{}
+	userCounts := map[int64]userStat{}
 	for rows.Next() {
-		var rel string
+		var songID int64
 		var count int
 		var last sql.NullString
-		if err := rows.Scan(&rel, &count, &last); err != nil {
+		if err := rows.Scan(&songID, &count, &last); err != nil {
 			rows.Close()
 			return nil, err
 		}
@@ -585,7 +614,7 @@ func attachPlays(songs []Song, username string) ([]Song, error) {
 				item.last = parsed
 			}
 		}
-		userCounts[filepath.ToSlash(rel)] = item
+		userCounts[songID] = item
 	}
 	if err := rows.Err(); err != nil {
 		rows.Close()
@@ -596,9 +625,8 @@ func attachPlays(songs []Song, username string) ([]Song, error) {
 	}
 
 	for i := range songs {
-		path := filepath.ToSlash(songs[i].RelPath)
-		songs[i].GlobalPlayCount = globalCounts[path]
-		if item, ok := userCounts[path]; ok {
+		songs[i].GlobalPlayCount = globalCounts[songs[i].ID]
+		if item, ok := userCounts[songs[i].ID]; ok {
 			songs[i].PlayCount = item.count
 			songs[i].LastPlayed = item.last
 		}
@@ -624,23 +652,23 @@ func mostPlayed(songs []Song) []Song {
 
 func loadPlaybackState(username string) (*PlaybackState, error) {
 	var state PlaybackState
+	var root, relativePath string
 	err := db.QueryRow(`
-		SELECT rel_path, position_seconds
-		FROM playback_state
-		WHERE username = ?
-	`, username).Scan(&state.RelPath, &state.Position)
+		SELECT state.song_id, state.position_seconds, location.root_path, location.relative_path, songs.title
+		FROM user_playback_state state
+		JOIN songs ON songs.id = state.song_id
+		JOIN media_locations location ON location.song_id = state.song_id AND location.is_available = 1
+		WHERE state.username = ?
+		ORDER BY location.id
+		LIMIT 1
+	`, username).Scan(&state.SongID, &state.Position, &root, &relativePath, &state.Title)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
-	_, rel, err := safeMediaPath(state.RelPath)
-	if err != nil {
-		return nil, nil
-	}
-	state.RelPath = rel
-	state.Title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
+	state.RelPath = mediaRelPath(root, relativePath)
 	state.PositionLabel = formatPlaybackPosition(state.Position)
 	return &state, nil
 }
@@ -655,9 +683,9 @@ func indexHandler(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	songs, err := scanAllMediaFolders()
+	songs, err := loadCatalogSongs()
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Error scanning media folders: %v", err), http.StatusInternalServerError)
+		http.Error(w, fmt.Sprintf("Error reading media catalog: %v", err), http.StatusInternalServerError)
 		return
 	}
 	username, ok := r.Context().Value(authenticatedUsernameKey).(string)
@@ -729,18 +757,18 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, rel, err := safeMediaPath(r.Form.Get("file"))
+	fullPath, _, err := safeMediaPath(r.Form.Get("file"))
 	if err != nil {
 		http.Error(w, "Song file not found", http.StatusNotFound)
 		return
 	}
-
-	title := strings.TrimSpace(r.Form.Get("title"))
-	if title == "" {
-		title = strings.TrimSuffix(filepath.Base(rel), filepath.Ext(rel))
-	}
-	if len(title) > 300 {
-		title = title[:300]
+	var songID int64
+	if err := db.QueryRowContext(r.Context(), `
+		SELECT song_id FROM media_locations
+		WHERE file_path = ? AND is_available = 1
+	`, filepath.Clean(fullPath)).Scan(&songID); err != nil {
+		http.Error(w, "Song is not in the catalog", http.StatusNotFound)
+		return
 	}
 
 	username, ok := r.Context().Value(authenticatedUsernameKey).(string)
@@ -755,33 +783,31 @@ func playedHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, err = tx.Exec(`
-		INSERT INTO plays (rel_path, title, play_count, last_played_at)
-		VALUES (?, ?, 1, CURRENT_TIMESTAMP)
-		ON CONFLICT(rel_path) DO UPDATE SET
+		INSERT INTO song_play_counts (song_id, play_count, last_played_at)
+		VALUES (?, 1, CURRENT_TIMESTAMP)
+		ON CONFLICT(song_id) DO UPDATE SET
 			play_count = play_count + 1,
-			title = excluded.title,
 			last_played_at = CURRENT_TIMESTAMP
-	`, rel, title)
+	`, songID)
 	if err == nil {
 		_, err = tx.Exec(`
-			INSERT INTO user_plays (username, rel_path, title, play_count, last_played_at)
-			VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP)
-			ON CONFLICT(username, rel_path) DO UPDATE SET
+			INSERT INTO user_song_plays (username, song_id, play_count, last_played_at)
+			VALUES (?, ?, 1, CURRENT_TIMESTAMP)
+			ON CONFLICT(username, song_id) DO UPDATE SET
 				play_count = play_count + 1,
-				title = excluded.title,
 				last_played_at = CURRENT_TIMESTAMP
-		`, username, rel, title)
+		`, username, songID)
 	}
 	if err != nil {
 		if rollbackErr := tx.Rollback(); rollbackErr != nil {
 			fmt.Printf("Could not roll back play transaction for user %q: %v\n", username, rollbackErr)
 		}
-		fmt.Printf("Could not write play count for user %q and path %q: %v\n", username, rel, err)
+		fmt.Printf("Could not write play count for user %q and song ID %d: %v\n", username, songID, err)
 		http.Error(w, "Could not record play", http.StatusInternalServerError)
 		return
 	}
 	if err := tx.Commit(); err != nil {
-		fmt.Printf("Could not commit play transaction for user %q and path %q: %v\n", username, rel, err)
+		fmt.Printf("Could not commit play transaction for user %q and song ID %d: %v\n", username, songID, err)
 		http.Error(w, "Could not record play", http.StatusInternalServerError)
 		return
 	}
@@ -809,19 +835,27 @@ func playbackProgressHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid playback position", http.StatusBadRequest)
 		return
 	}
-	_, rel, err := safeMediaPath(r.Form.Get("file"))
+	fullPath, _, err := safeMediaPath(r.Form.Get("file"))
 	if err != nil {
 		http.Error(w, "Media file not found", http.StatusNotFound)
 		return
 	}
+	var songID int64
+	if err := db.QueryRowContext(r.Context(), `
+		SELECT song_id FROM media_locations
+		WHERE file_path = ? AND is_available = 1
+	`, filepath.Clean(fullPath)).Scan(&songID); err != nil {
+		http.Error(w, "Media is not in the catalog", http.StatusNotFound)
+		return
+	}
 	_, err = db.Exec(`
-		INSERT INTO playback_state (username, rel_path, position_seconds, updated_at)
+		INSERT INTO user_playback_state (username, song_id, position_seconds, updated_at)
 		VALUES (?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(username) DO UPDATE SET
-			rel_path = excluded.rel_path,
+			song_id = excluded.song_id,
 			position_seconds = excluded.position_seconds,
 			updated_at = CURRENT_TIMESTAMP
-	`, username, rel, position)
+	`, username, songID, position)
 	if err != nil {
 		fmt.Printf("Could not save playback position for user %q: %v\n", username, err)
 		http.Error(w, "Could not save playback position", http.StatusInternalServerError)
@@ -842,12 +876,13 @@ func safeMediaPath(rel string) (string, string, error) {
 		return "", "", fmt.Errorf("bad path")
 	}
 
-	for _, root := range mediaRoots {
-		rootName := filepath.Base(filepath.Clean(root))
-		prefix := strings.TrimSuffix(filepath.ToSlash(rootName), "/") + "/"
-		if strings.HasPrefix(strings.ToLower(normalized), strings.ToLower(prefix)) {
-			candidate := strings.TrimPrefix(normalized, prefix)
-			return resolveMediaFile(root, candidate)
+	if len(mediaRoots) > 1 {
+		for _, root := range mediaRoots {
+			prefix := strings.TrimSuffix(filepath.ToSlash(mediaRootLabel(root)), "/") + "/"
+			if strings.HasPrefix(strings.ToLower(normalized), strings.ToLower(prefix)) {
+				candidate := normalized[len(prefix):]
+				return resolveMediaFile(root, candidate)
+			}
 		}
 	}
 

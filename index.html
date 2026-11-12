@@ -510,6 +510,7 @@
           {{if .MostPlayed}} {{range .MostPlayed}}
           <article
             class="tile"
+            data-song-id="{{.ID}}"
             data-file="{{.RelPath}}"
             data-title="{{.Title}}"
             title="{{.Title}}"
@@ -519,8 +520,8 @@
                 <span class="tile-title-text">{{.Title}}</span>
               </div>
               <div class="meta">
-                <span class="global-play-count">{{.GlobalPlayCount}}</span>
-                total plays
+                <span class="play-count">{{.PlayCount}}</span>
+                plays by you
               </div>
             </div>
           </article>
@@ -565,6 +566,7 @@
           <button
             class="track"
             type="button"
+            data-song-id="{{.ID}}"
             data-file="{{.RelPath}}"
             data-title="{{.Title}}"
             data-folder="{{.Folder}}"
@@ -815,7 +817,7 @@
           const count = el.querySelector(selector);
           if (count) count.textContent = String(Number(count.textContent) + 1);
         };
-        if (track) bump(track, ".global-play-count");
+        if (track) bump(track, ".play-count");
 
         const strip = document.getElementById("mostPlayed");
         const empty = strip.querySelector(".empty");
@@ -827,6 +829,7 @@
           tile.className = "tile";
           tile.dataset.file = file;
           tile.dataset.title = title;
+          if (track) tile.dataset.songId = track.dataset.songId;
           tile.title = title;
           const copy = document.createElement("div");
           copy.className = "tile-copy";
@@ -838,7 +841,7 @@
           name.appendChild(nameText);
           const meta = document.createElement("div");
           meta.className = "meta";
-          meta.innerHTML = '<span class="play-count">0</span> plays';
+          meta.innerHTML = '<span class="play-count">0</span> plays by you';
           copy.append(name, meta);
           tile.append(copy);
           decorateTile(tile);

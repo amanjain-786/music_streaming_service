@@ -1,0 +1,6 @@
+{
+  "media_roots": ["C:/Path/To/Music", "C:/Path/To/Videos"],
+  "database_path": "plays.db",
+  "credentials_file": "users.txt",
+  "listen_address": ":8080"
+}
