@@ -3,7 +3,8 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Go Audio Streamer</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <title>Baithak</title>
     <style>
       /* =====================================================================
          1. BASE: variables, reset, page background
@@ -353,17 +354,29 @@
         overflow: hidden;
         text-overflow: ellipsis;
       }
-      .track .queue-btn {
-        width: 28px;
+      .track-actions {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      .track .queue-btn,
+      .track .playlist-btn {
+        min-width: 28px;
         height: 28px;
         display: grid;
         place-items: center;
-        border-radius: 50%;
+        border-radius: 14px;
         cursor: pointer;
         font-size: 18px;
         line-height: 1;
       }
-      .track .queue-btn:hover {
+      .track .playlist-btn {
+        padding: 0 6px;
+        font-size: 14px;
+        white-space: nowrap;
+      }
+      .track .queue-btn:hover,
+      .track .playlist-btn:hover {
         background: rgba(255, 255, 255, 0.12);
       }
       .track.is-located {
@@ -452,7 +465,7 @@
       .library.is-grid .track .meta {
         text-shadow: 0 1px 5px rgba(0, 0, 0, 0.65);
       }
-      .library.is-grid .track .queue-btn {
+      .library.is-grid .track .track-actions {
         position: absolute;
         z-index: 1;
         right: 8px;
@@ -670,6 +683,133 @@
       }
 
       /* =====================================================================
+         8b. PLAYLISTS (list in the menu drawer + "add to playlist" dialog)
+         ===================================================================== */
+      .pl-header {
+        margin-bottom: 10px;
+      }
+      .pl-form {
+        display: flex;
+        gap: 8px;
+        margin: 0 0 12px;
+      }
+      .pl-form .search {
+        flex: 1;
+        min-width: 0;
+        width: auto;
+        padding: 8px 12px;
+      }
+      .pl-list,
+      .pl-songs,
+      .picker-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+      }
+      .pl-head,
+      .pl-song {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .pl-name,
+      .pl-song-title {
+        flex: 1;
+        min-width: 0;
+        padding: 6px 4px;
+        background: none;
+        border: 0;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .pl-name {
+        font-weight: 600;
+      }
+      .pl-song-title {
+        font-size: 0.88rem;
+      }
+      .pl-song-title:hover {
+        color: var(--accent);
+      }
+      .pl-count {
+        flex: none;
+        color: var(--muted);
+        font-size: 0.75rem;
+      }
+      .pl-action {
+        flex: none;
+        padding: 6px;
+        background: none;
+        border: 0;
+        color: inherit;
+        opacity: 0.6;
+        cursor: pointer;
+      }
+      .pl-action:hover:not(:disabled) {
+        opacity: 1;
+      }
+      .pl-action:disabled {
+        opacity: 0.25;
+        cursor: default;
+      }
+      .pl-songs {
+        margin: 0 0 8px 12px;
+        padding-left: 8px;
+        border-left: 1px solid var(--line);
+      }
+      .pl-empty {
+        padding: 6px 4px;
+        color: var(--muted);
+        font-size: 0.85rem;
+      }
+
+      .picker {
+        width: min(360px, 92vw);
+        padding: 16px;
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        color: var(--text);
+      }
+      .picker::backdrop {
+        background: rgba(0, 0, 0, 0.6);
+      }
+      .picker-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 12px;
+      }
+      .picker-list {
+        max-height: 40vh;
+        overflow-y: auto;
+        margin-bottom: 12px;
+      }
+      .picker-item {
+        width: 100%;
+        padding: 10px 12px;
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: inherit;
+        font: inherit;
+        text-align: left;
+        cursor: pointer;
+      }
+      .picker-item:hover:not(:disabled) {
+        background: var(--surface-2);
+      }
+      .picker-item:disabled {
+        opacity: 0.5;
+        cursor: default;
+      }
+
+      /* =====================================================================
          9. BOTTOM PLAYER
          ===================================================================== */
       .player {
@@ -840,7 +980,7 @@
     <!-- ===================== TOP BAR ===================== -->
     <header class="topbar">
       <div>
-        <h1>Music</h1>
+        <h1>Welcome to Baithak</h1>
         <p class="lead">Newest files first. The top row fills in as you play.</p>
       </div>
       <button
@@ -955,14 +1095,24 @@
                   <span class="play-count">{{.PlayCount}}</span> plays
                 </span>
               </span>
-              <span
-                class="queue-btn"
-                role="button"
-                tabindex="0"
-                title="Add to queue"
-                aria-label="Add {{.Title}} to queue"
-                >+</span
-              >
+              <span class="track-actions">
+                <span
+                  class="playlist-btn"
+                  role="button"
+                  tabindex="0"
+                  title="Add to playlist"
+                  aria-label="Add {{.Title}} to playlist"
+                  >♪+</span
+                >
+                <span
+                  class="queue-btn"
+                  role="button"
+                  tabindex="0"
+                  title="Add to queue"
+                  aria-label="Add {{.Title}} to queue"
+                  >+</span
+                >
+              </span>
             </button>
             {{end}} {{else}}
             <p class="empty">No audio files found in the music folder.</p>
@@ -1035,7 +1185,7 @@
       aria-label="Main menu"
     >
       <div class="menu-top">
-        <span class="app-name">Go Audio Streamer</span>
+        <span class="app-name">Baithak</span>
         <button
           id="closeMenu"
           class="icon-btn square"
@@ -1045,11 +1195,54 @@
           ✕
         </button>
       </div>
-      <div class="menu-body"><!-- future menu links go here --></div>
+      <div class="menu-body">
+        <div class="pl-header"><h2>Playlists</h2></div>
+        <form class="pl-form" id="newPlaylistForm">
+          <input
+            id="newPlaylistName"
+            class="search"
+            type="text"
+            maxlength="100"
+            placeholder="New playlist name"
+            autocomplete="off"
+            aria-label="New playlist name"
+          />
+          <button class="icon-btn" type="submit">Create</button>
+        </form>
+        <ul class="pl-list" id="playlistList"></ul>
+      </div>
       <form class="menu-bottom" method="post" action="/logout">
         <button class="logout-btn" type="submit">Log out</button>
       </form>
     </nav>
+
+    <!-- ===================== ADD-TO-PLAYLIST DIALOG ===================== -->
+    <dialog class="picker" id="playlistPicker" aria-label="Add to playlist">
+      <div class="picker-head">
+        <h2>Add to playlist</h2>
+        <button
+          id="closePicker"
+          class="icon-btn square"
+          type="button"
+          aria-label="Close"
+        >
+          ✕
+        </button>
+      </div>
+      <ul class="picker-list" id="pickerList"></ul>
+      <form class="pl-form" id="pickerNewForm">
+        <input
+          id="pickerNewName"
+          class="search"
+          type="text"
+          maxlength="100"
+          placeholder="New playlist name"
+          autocomplete="off"
+          aria-label="New playlist name"
+        />
+        <button class="icon-btn" type="submit">Create &amp; add</button>
+      </form>
+    </dialog>
 
     <!-- ===================== BOTTOM PLAYER ===================== -->
     <div class="player" id="player">
@@ -1201,6 +1394,15 @@
         menuToggle: $("menuToggle"),
         closeMenu: $("closeMenu"),
         backdrop: $("backdrop"),
+        // playlists
+        playlistList: $("playlistList"),
+        newPlaylistForm: $("newPlaylistForm"),
+        newPlaylistName: $("newPlaylistName"),
+        playlistPicker: $("playlistPicker"),
+        pickerList: $("pickerList"),
+        pickerNewForm: $("pickerNewForm"),
+        pickerNewName: $("pickerNewName"),
+        closePicker: $("closePicker"),
       };
 
       /* ---------------------------------------------------------------------
@@ -1219,6 +1421,10 @@
         videoWidth: loadSavedVideoWidth(),
         queue: [], // upcoming songs: [{ file, title }, ...]
         openDrawer: null, // "menu" | "queue" | null
+        playlists: [], // [{ id, name, songs: [{ id, file, title }] }] from /playlists
+        expandedPlaylists: new Set(), // playlist ids that are open in the drawer
+        pickerFile: "", // song the "add to playlist" dialog is about
+        pickerButton: null, // the ♪+ button that opened it (for the ✓ flash)
       };
 
       function loadSavedVideoWidth() {
@@ -1769,18 +1975,284 @@
       }
 
       /* ---------------------------------------------------------------------
+         7b. PLAYLISTS
+             Data lives on the server; state.playlists is a copy of it.
+             Every change = call the server, then update/reload the copy, then redraw.
+         --------------------------------------------------------------------- */
+
+      // Small fetch wrapper: GET when there are no params, POST (form-encoded) otherwise.
+      async function api(url, params) {
+        const response = await fetch(url, {
+          method: params ? "POST" : "GET",
+          credentials: "same-origin",
+          headers: params
+            ? { "Content-Type": "application/x-www-form-urlencoded" }
+            : undefined,
+          body: params ? new URLSearchParams(params) : undefined,
+        });
+        if (!response.ok) throw new Error((await response.text()) || response.status);
+        return response.status === 204 ? null : response.json();
+      }
+
+      async function loadPlaylists() {
+        try {
+          state.playlists = await api("/playlists");
+        } catch (err) {
+          console.error("Could not load playlists:", err);
+        }
+        renderPlaylists();
+      }
+
+      async function createPlaylist(name) {
+        const playlist = await api("/playlists/create", { name });
+        state.playlists.push(playlist);
+        renderPlaylists();
+        return playlist;
+      }
+
+      async function deletePlaylist(id) {
+        await api("/playlists/delete", { playlist_id: id });
+        state.playlists = state.playlists.filter((p) => p.id !== id);
+        state.expandedPlaylists.delete(id);
+        renderPlaylists();
+      }
+
+      async function addSongToPlaylist(playlistId, file) {
+        await api("/playlists/add", { playlist_id: playlistId, file });
+        await loadPlaylists();
+      }
+
+      async function removeSongFromPlaylist(playlistId, songId) {
+        await api("/playlists/remove", { playlist_id: playlistId, song_id: songId });
+        await loadPlaylists();
+      }
+
+      // Play a list of songs: the first starts now, the rest become the queue.
+      function playSongs(songs) {
+        if (songs.length === 0) return;
+        state.queue = songs.map(({ file, title }) => ({ file, title }));
+        playFromQueue();
+      }
+
+      function makeButton(className, text, label, data = {}) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = className;
+        btn.textContent = text;
+        btn.title = label;
+        btn.setAttribute("aria-label", label);
+        Object.assign(btn.dataset, data);
+        return btn;
+      }
+
+      function emptyItem(className, text) {
+        const li = document.createElement("li");
+        li.className = className;
+        li.textContent = text;
+        return li;
+      }
+
+      // Draw the playlist list inside the menu drawer.
+      function renderPlaylists() {
+        dom.playlistList.textContent = "";
+        if (state.playlists.length === 0) {
+          dom.playlistList.appendChild(
+            emptyItem("pl-empty", "No playlists yet. Create one above."),
+          );
+          return;
+        }
+
+        state.playlists.forEach((playlist) => {
+          const open = state.expandedPlaylists.has(playlist.id);
+          const id = playlist.id;
+
+          const count = document.createElement("span");
+          count.className = "pl-count";
+          count.textContent = String(playlist.songs.length);
+
+          const play = makeButton("pl-action", "▶", "Play " + playlist.name, { action: "play", id });
+          play.disabled = playlist.songs.length === 0;
+
+          const head = document.createElement("div");
+          head.className = "pl-head";
+          head.append(
+            makeButton("pl-name", (open ? "▾ " : "▸ ") + playlist.name, "Show songs in " + playlist.name, { action: "toggle", id }),
+            count,
+            play,
+            makeButton("pl-action", "✕", "Delete " + playlist.name, { action: "delete", id }),
+          );
+
+          const li = document.createElement("li");
+          li.className = "pl-item";
+          li.appendChild(head);
+
+          if (open) {
+            const songs = document.createElement("ol");
+            songs.className = "pl-songs";
+            if (playlist.songs.length === 0) {
+              songs.appendChild(emptyItem("pl-empty", "Empty. Use ♪+ on a song to add it."));
+            }
+            playlist.songs.forEach((song, index) => {
+              const row = document.createElement("li");
+              row.className = "pl-song";
+              row.append(
+                makeButton("pl-song-title", song.title, "Play " + song.title, { action: "playsong", id, index }),
+                makeButton("pl-action", "✕", "Remove " + song.title + " from playlist", { action: "removesong", id, songId: song.id }),
+              );
+              songs.appendChild(row);
+            });
+            li.appendChild(songs);
+          }
+          dom.playlistList.appendChild(li);
+        });
+      }
+
+      async function handlePlaylistListClick(event) {
+        const btn = event.target.closest("button[data-action]");
+        if (!btn) return;
+        const playlist = state.playlists.find((p) => p.id === Number(btn.dataset.id));
+        if (!playlist) return;
+
+        try {
+          switch (btn.dataset.action) {
+            case "toggle":
+              if (state.expandedPlaylists.has(playlist.id)) state.expandedPlaylists.delete(playlist.id);
+              else state.expandedPlaylists.add(playlist.id);
+              renderPlaylists();
+              break;
+            case "play":
+              setDrawer(null);
+              playSongs(playlist.songs);
+              break;
+            case "playsong": // this song and everything after it
+              setDrawer(null);
+              playSongs(playlist.songs.slice(Number(btn.dataset.index)));
+              break;
+            case "removesong":
+              await removeSongFromPlaylist(playlist.id, Number(btn.dataset.songId));
+              break;
+            case "delete":
+              if (confirm('Delete playlist "' + playlist.name + '"?')) {
+                await deletePlaylist(playlist.id);
+              }
+              break;
+          }
+        } catch (err) {
+          console.error("Playlist action failed:", err);
+          alert("Something went wrong. Please try again.");
+        }
+      }
+
+      // ---- "Add to playlist" dialog (opened by the ♪+ button on a song row) ----
+      function openPlaylistPicker(file, sourceButton) {
+        state.pickerFile = file;
+        state.pickerButton = sourceButton;
+        dom.pickerNewName.value = "";
+        renderPicker();
+        dom.playlistPicker.showModal();
+      }
+
+      function renderPicker() {
+        dom.pickerList.textContent = "";
+        if (state.playlists.length === 0) {
+          dom.pickerList.appendChild(
+            emptyItem("pl-empty", "No playlists yet. Create one below."),
+          );
+          return;
+        }
+        state.playlists.forEach((playlist) => {
+          const already = playlist.songs.some((song) => song.file === state.pickerFile);
+          const btn = makeButton(
+            "picker-item",
+            playlist.name + (already ? "  ✓" : ""),
+            "Add to " + playlist.name,
+            { id: playlist.id },
+          );
+          btn.disabled = already;
+          const li = document.createElement("li");
+          li.appendChild(btn);
+          dom.pickerList.appendChild(li);
+        });
+      }
+
+      async function addPickedSong(playlistId) {
+        try {
+          await addSongToPlaylist(playlistId, state.pickerFile);
+          dom.playlistPicker.close();
+          if (state.pickerButton) flashButton(state.pickerButton);
+        } catch (err) {
+          console.error("Could not add song to playlist:", err);
+          alert("Could not add the song to that playlist.");
+        }
+      }
+
+      // Brief "✓" on a small button, then back to its normal label.
+      function flashButton(btn) {
+        if (!btn.dataset.label) btn.dataset.label = btn.textContent;
+        btn.textContent = "✓";
+        setTimeout(() => (btn.textContent = btn.dataset.label), 800);
+      }
+
+      function initPlaylists() {
+        // create from the drawer (an empty playlist is fine)
+        dom.newPlaylistForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const name = dom.newPlaylistName.value.trim();
+          if (!name) return;
+          try {
+            await createPlaylist(name);
+            dom.newPlaylistName.value = "";
+          } catch (err) {
+            console.error("Could not create playlist:", err);
+            alert("Could not create the playlist.");
+          }
+        });
+        dom.playlistList.addEventListener("click", handlePlaylistListClick);
+
+        // dialog
+        dom.pickerList.addEventListener("click", (event) => {
+          const btn = event.target.closest("button[data-id]");
+          if (btn) addPickedSong(Number(btn.dataset.id));
+        });
+        dom.pickerNewForm.addEventListener("submit", async (event) => {
+          event.preventDefault();
+          const name = dom.pickerNewName.value.trim();
+          if (!name) return;
+          try {
+            const playlist = await createPlaylist(name);
+            await addPickedSong(playlist.id);
+          } catch (err) {
+            console.error("Could not create playlist:", err);
+            alert("Could not create the playlist.");
+          }
+        });
+        dom.closePicker.addEventListener("click", () => dom.playlistPicker.close());
+        dom.playlistPicker.addEventListener("click", (event) => {
+          if (event.target === dom.playlistPicker) dom.playlistPicker.close(); // click on the dim area
+        });
+
+        loadPlaylists();
+      }
+
+      /* ---------------------------------------------------------------------
          8. EVENTS
          --------------------------------------------------------------------- */
 
       // ---- Clicks anywhere on the page: "+" buttons and play-on-click ----
       document.body.addEventListener("click", (event) => {
+        const playlistBtn = event.target.closest(".playlist-btn");
+        if (playlistBtn) {
+          const source = playlistBtn.closest(".track");
+          if (source?.dataset.file) openPlaylistPicker(source.dataset.file, playlistBtn);
+          return;
+        }
+
         const queueBtn = event.target.closest(".queue-btn");
         if (queueBtn) {
           const source = queueBtn.closest(".track, .tile");
           if (source?.dataset.file) {
             addToQueue(source.dataset.file, source.dataset.title);
-            queueBtn.textContent = "✓";
-            setTimeout(() => (queueBtn.textContent = "+"), 800);
+            flashButton(queueBtn);
           }
           return; // don't fall through to "play this song"
         }
@@ -1796,7 +2268,7 @@
         }
         // "+" is a <span role="button">, so give it Enter/Space support
         if (event.key !== "Enter" && event.key !== " ") return;
-        const queueBtn = event.target.closest?.(".queue-btn");
+        const queueBtn = event.target.closest?.(".queue-btn, .playlist-btn");
         if (!queueBtn) return;
         event.preventDefault();
         event.stopPropagation();
@@ -1909,6 +2381,7 @@
       setVideoWidth(state.videoWidth, false);
       decorateAllTiles();
       renderQueue();
+      initPlaylists();
 
       const songFromUrl = new URLSearchParams(location.search).get("song");
       if (dom.savedPlaybackState) {

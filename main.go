@@ -165,6 +165,9 @@ func run(args []string) error {
 	mux.HandleFunc("/progress", playbackProgressHandler)
 	mux.HandleFunc("/login", loginHandler)
 	mux.HandleFunc("/logout", logoutHandler)
+	registerPlaylistRoutes(mux)
+
+	mux.HandleFunc("/favicon.svg", faviconHandler)
 
 	fmt.Printf("[*] Music server started. Open http://localhost%s in your browser\n", port)
 	if err := http.ListenAndServe(port, authMiddleware(mux)); err != nil {
@@ -191,6 +194,10 @@ func authMiddleware(next http.Handler) http.Handler {
 					return
 				}
 			}
+			next.ServeHTTP(w, r)
+			return
+		}
+		if r.URL.Path == "/favicon.svg" {
 			next.ServeHTTP(w, r)
 			return
 		}
@@ -266,6 +273,12 @@ func authenticatedUsername(r *http.Request) (string, bool) {
 		return "", false
 	}
 	return session.username, true
+}
+
+func faviconHandler(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "image/svg+xml")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	http.ServeFile(w, r, "pics/logo.svg") // path on disk, relative to where you run the server
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +454,7 @@ func openDB(path string) (*sql.DB, error) {
 	err = catalog.EnsureSchema(context.Background(), conn)
 	if err == nil {
 		_, err = conn.Exec(`
+
 			CREATE TABLE IF NOT EXISTS song_play_counts (
 				song_id        INTEGER PRIMARY KEY REFERENCES songs(id),
 				play_count     INTEGER NOT NULL DEFAULT 0,
