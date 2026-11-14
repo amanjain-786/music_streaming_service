@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Go Audio Streamer</title>
     <style>
+      /* =====================================================================
+         1. BASE: variables, reset, page background
+         ===================================================================== */
       :root {
         --bg: #090d16;
         --surface: #121a2b;
@@ -14,6 +17,15 @@
         --muted: #94a3b8;
         --accent: #7dd3fc;
         --accent-deep: #0284c7;
+
+        --queue-width: 320px;
+        --drawer-width: min(320px, 88vw);
+
+        /* stacking order, lowest to highest */
+        --z-player: 5;
+        --z-fab: 6;
+        --z-backdrop: 20;
+        --z-drawer: 30;
       }
       * {
         box-sizing: border-box;
@@ -22,7 +34,8 @@
         display: none !important;
       }
       body {
-        margin: 10px;
+        margin: 0;
+        padding: 28px 20px 168px; /* bottom space keeps content clear of the player */
         font-family: "Segoe UI", sans-serif;
         background:
           radial-gradient(
@@ -32,35 +45,11 @@
           ),
           var(--bg);
         color: var(--text);
-        padding: 36px 20px 168px;
       }
-      .layout {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 320px;
-        gap: 24px;
-        align-items: start;
-      }
-      /* if .wrap has a max-width / auto margins, let the grid control it */
-      .layout > .wrap { max-width: none; margin: 0; }
       h1 {
         margin: 0;
         font-size: 1.7rem;
         letter-spacing: -0.04em;
-      }
-      .lead {
-        margin: 6px 0 0;
-        color: var(--muted);
-        font-size: 0.92rem;
-      }
-      section {
-        margin-top: 32px;
-      }
-      .section-head {
-        display: flex;
-        justify-content: space-between;
-        align-items: end;
-        gap: 16px;
-        margin-bottom: 14px;
       }
       h2 {
         margin: 0;
@@ -69,6 +58,216 @@
         text-transform: uppercase;
         color: var(--accent);
       }
+      section {
+        margin-top: 32px;
+      }
+      .lead {
+        margin: 6px 0 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+      .meta {
+        color: var(--muted);
+        font-size: 0.78rem;
+        margin-top: 3px;
+      }
+      .empty {
+        color: var(--muted);
+        padding: 8px 2px 0;
+      }
+      input[type="range"] {
+        accent-color: var(--accent);
+      }
+      audio,
+      video {
+        display: none;
+      }
+
+      /* =====================================================================
+         2. SHARED BUTTONS
+         ===================================================================== */
+      .icon-btn,
+      .transport {
+        border: 0;
+        background: var(--text);
+        color: #082f49;
+        border-radius: 999px;
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .icon-btn {
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--line);
+        padding: 8px 10px;
+      }
+      .icon-btn.square {
+        display: grid;
+        place-items: center;
+        width: 40px;
+        height: 40px;
+        padding: 0;
+      }
+      .icon-btn:disabled {
+        opacity: 0.35;
+        cursor: default;
+      }
+      .transport {
+        width: 42px;
+        height: 42px;
+        font-size: 0.95rem;
+      }
+      :focus-visible {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      /* =====================================================================
+         3. TOP BAR (title + hamburger)
+         ===================================================================== */
+      .topbar {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 4px;
+      }
+
+      /* =====================================================================
+         4. PAGE LAYOUT (library on the left, queue on the right)
+         ===================================================================== */
+      .layout {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--queue-width);
+        gap: 24px;
+        align-items: start;
+      }
+      .layout > .wrap {
+        min-width: 0;
+      }
+
+      /* =====================================================================
+         5. MOST PLAYED STRIP (tiles)
+         ===================================================================== */
+      .section-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: end;
+        gap: 16px;
+        margin-bottom: 14px;
+      }
+      .strip {
+        display: flex;
+        gap: 12px;
+        overflow-x: auto;
+        padding-bottom: 6px;
+        scroll-snap-type: x proximity;
+      }
+      .tile {
+        flex: 0 0 180px;
+        width: 180px;
+        height: 180px;
+        scroll-snap-align: start;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 10px;
+        border-radius: 18px;
+        background:
+          linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
+          var(--surface);
+        border: 1px solid var(--line);
+      }
+      .tile.is-active {
+        border-color: rgba(125, 211, 252, 0.7);
+      }
+      .tile-thumb {
+        position: relative;
+        width: 100%;
+        height: 112px;
+        flex: 0 0 112px;
+        border-radius: 14px;
+        overflow: hidden;
+        background: linear-gradient(
+          135deg,
+          rgba(125, 211, 252, 0.28),
+          rgba(2, 132, 199, 0.16)
+        );
+        border: 1px solid rgba(148, 163, 184, 0.12);
+      }
+      .thumb-label {
+        position: absolute;
+        inset: 0;
+        display: grid;
+        place-items: center;
+        font-size: 2rem;
+        font-weight: 700;
+        color: white;
+        background: radial-gradient(
+          circle at 20% 20%,
+          rgba(125, 211, 252, 0.32),
+          rgba(2, 132, 199, 0.65)
+        );
+      }
+      .tile-copy {
+        min-width: 0;
+        height: 32px;
+        flex: 0 0 32px;
+      }
+      .tile-title {
+        height: 18px;
+        font-weight: 600;
+      }
+      .tile-title-text {
+        display: block;
+        overflow: hidden;
+        white-space: nowrap;
+        text-overflow: ellipsis;
+      }
+      .tile-copy .meta {
+        height: 14px;
+        margin-top: 0;
+        line-height: 14px;
+      }
+
+      /* round play buttons (tile "disc" and list-row button) */
+      .disc,
+      .play-btn {
+        width: 42px;
+        height: 42px;
+        border-radius: 50%;
+        border: 0;
+        display: grid;
+        place-items: center;
+        cursor: pointer;
+        font-weight: 700;
+      }
+      .disc {
+        position: absolute;
+        left: 12px;
+        bottom: 12px;
+        background: rgba(8, 47, 73, 0.78);
+        color: white;
+        font-size: 0.9rem;
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+      }
+      .play-btn {
+        width: 36px;
+        height: 36px;
+        background: transparent;
+        color: var(--text);
+        border: 1px solid var(--line);
+        font-size: 0.78rem;
+      }
+      .track.is-active .play-btn,
+      .tile.is-active .disc {
+        box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.2);
+      }
+
+      /* =====================================================================
+         6. ALL SONGS LIBRARY (list view + grid view)
+         ===================================================================== */
       .search {
         width: min(280px, 100%);
         background: var(--surface);
@@ -84,7 +283,6 @@
       .media-filter {
         width: 132px;
         flex: 0 0 132px;
-        color: var(--text);
       }
       .library-tools {
         display: flex;
@@ -115,137 +313,18 @@
         background: var(--surface-2);
         color: var(--text);
       }
-      .strip {
-        display: flex;
-        gap: 12px;
-        overflow-x: auto;
-        padding-bottom: 6px;
-        scroll-snap-type: x proximity;
-      }
-      .tile {
-        flex: 0 0 180px;
-        width: 180px;
-        height: 180px;
-        flex-shrink: 0;
-        scroll-snap-align: start;
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        padding: 10px;
-        border-radius: 18px;
-        background:
-          linear-gradient(180deg, rgba(255, 255, 255, 0.04), transparent 40%),
-          var(--surface);
-        border: 1px solid var(--line);
-      }
-      .tile.is-active {
-        border-color: rgba(125, 211, 252, 0.7);
-      }
-      .tile-thumb {
-        position: relative;
-        width: 100%;
-        height: 112px;
-        flex: 0 0 112px;
-        border-radius: 14px;
-        overflow: hidden;
-        background: linear-gradient(
-          135deg,
-          rgba(125, 211, 252, 0.28),
-          rgba(2, 132, 199, 0.16)
-        );
-        border: 1px solid rgba(148, 163, 184, 0.12);
-      }
-      .tile-thumb video {
-        width: 100%;
-        height: 100%;
-        object-fit: cover;
-        display: block;
-        background: #000;
-      }
-      .tile-thumb .thumb-label {
-        position: absolute;
-        inset: 0;
-        display: grid;
-        place-items: center;
-        font-size: 2rem;
-        font-weight: 700;
-        color: white;
-        background: radial-gradient(
-          circle at 20% 20%,
-          rgba(125, 211, 252, 0.32),
-          rgba(2, 132, 199, 0.65)
-        );
-      }
-      .disc,
-      .play-btn {
-        width: 42px;
-        height: 42px;
-        border-radius: 50%;
-        border: 0;
-        display: grid;
-        place-items: center;
-        cursor: pointer;
-        font-weight: 700;
-      }
-      .disc {
-        position: absolute;
-        left: 12px;
-        bottom: 12px;
-        background: rgba(8, 47, 73, 0.78);
-        color: white;
-        font-size: 0.9rem;
-        border: 1px solid rgba(255, 255, 255, 0.14);
-        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
-      }
-      .tile-copy {
-        min-width: 0;
-        height: 32px;
-        flex: 0 0 32px;
-      }
-      .tile-title {
-        height: 18px;
-        font-weight: 600;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-      }
-      .tile-title-text {
-        display: block;
-        overflow: hidden;
-        white-space: nowrap;
-        text-overflow: ellipsis;
-      }
-      .tile-copy .meta {
-        height: 14px;
-        margin-top: 0;
-        line-height: 14px;
-      }
-      .track-title {
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .meta {
-        color: var(--muted);
-        font-size: 0.78rem;
-        margin-top: 3px;
-      }
+
       .library {
         background: rgba(18, 26, 43, 0.86);
         border: 1px solid var(--line);
         border-radius: 22px;
         overflow: hidden;
       }
-      .library.is-grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-        gap: 12px;
-        padding: 12px;
-        background: transparent;
-        border: 0;
-        overflow: visible;
+      .library .empty {
+        padding: 28px 16px;
       }
+
+      /* one song row (list view) */
       .track {
         position: relative;
         width: 100%;
@@ -261,9 +340,20 @@
         text-align: left;
         cursor: pointer;
       }
+      .track:last-child {
+        border-bottom: 0;
+      }
+      .track:hover,
+      .track.is-active {
+        background: var(--surface-2);
+      }
+      .track-title {
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
       .track .queue-btn {
-        margin-left: auto;   /* pushes it to the right end of the row */
-        flex: none;
         width: 28px;
         height: 28px;
         display: grid;
@@ -276,16 +366,36 @@
       .track .queue-btn:hover {
         background: rgba(255, 255, 255, 0.12);
       }
-      .track:last-child {
-        border-bottom: 0;
+      .track.is-located {
+        animation: locate-flash 1.8s ease;
+      }
+      @keyframes locate-flash {
+        0%,
+        60% {
+          box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6);
+        }
+        100% {
+          box-shadow: 0 0 0 2px transparent;
+        }
+      }
+
+      /* grid view overrides */
+      .track-cover {
+        display: none; /* only used in grid view */
+      }
+      .library.is-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+        gap: 12px;
+        padding: 12px;
+        background: transparent;
+        border: 0;
+        overflow: visible;
       }
       .library.is-grid .track {
-        position: relative;
         display: flex;
-        width: 100%;
         min-width: 0;
         aspect-ratio: 1 / 1;
-        height: auto;
         flex-direction: column;
         justify-content: flex-end;
         gap: 10px;
@@ -308,14 +418,6 @@
           rgba(2, 132, 199, 0.14)
         );
         color: white;
-      }
-      .library.is-grid .track .queue-btn {
-        position: absolute;
-        right: 8px;
-        bottom: 8px;
-      }
-      .track-cover {
-        display: none;
       }
       .track-cover-initial {
         font-size: 3rem;
@@ -350,29 +452,18 @@
       .library.is-grid .track .meta {
         text-shadow: 0 1px 5px rgba(0, 0, 0, 0.65);
       }
-      .track:hover,
-      .track.is-active {
-        background: var(--surface-2);
+      .library.is-grid .track .queue-btn {
+        position: absolute;
+        z-index: 1;
+        right: 8px;
+        bottom: 8px;
       }
-      .play-btn {
-        width: 36px;
-        height: 36px;
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--line);
-        font-size: 0.78rem;
-      }
-      .track.is-active .play-btn,
-      .tile.is-active .disc {
-        box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.2);
-      }
-      .empty {
-        color: var(--muted);
-        padding: 8px 2px 0;
-      }
-      .library .empty {
-        padding: 28px 16px;
-      }
+
+      /* =====================================================================
+         7. QUEUE PANEL
+            Desktop: sticky column on the right.
+            Small screens: slides in from the left (see section 10).
+         ===================================================================== */
       .queue-panel {
         position: sticky;
         top: 16px;
@@ -387,10 +478,19 @@
         display: flex;
         align-items: center;
         justify-content: space-between;
+        gap: 8px;
         margin-bottom: 12px;
       }
-      .queue-head h2 { margin: 0; font-size: 1.1rem; }
-
+      .queue-head h2 {
+        font-size: 1.1rem;
+      }
+      .queue-actions {
+        display: flex;
+        gap: 6px;
+      }
+      .queue-close {
+        display: none; /* only shown on small screens */
+      }
       .queue-label {
         font-size: 0.75rem;
         text-transform: uppercase;
@@ -398,9 +498,20 @@
         opacity: 0.6;
         margin: 12px 0 6px;
       }
-      .queue-now-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-      .queue-list { list-style: none; margin: 0; padding: 0; max-height: 300px; overflow-y: auto; }
+      .queue-now-title {
+        font-weight: 600;
+        cursor: pointer;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .queue-list {
+        list-style: none;
+        margin: 0;
+        padding: 0;
+        max-height: 300px;
+        overflow-y: auto;
+      }
       .queue-item {
         display: flex;
         align-items: center;
@@ -408,7 +519,9 @@
         padding: 8px;
         border-radius: 8px;
       }
-      .queue-item:hover { background: rgba(255, 255, 255, 0.08); }
+      .queue-item:hover {
+        background: rgba(255, 255, 255, 0.08);
+      }
       .queue-item-title {
         flex: 1;
         min-width: 0;
@@ -422,6 +535,7 @@
         text-align: left;
         font: inherit;
       }
+      .queue-item-play,
       .queue-item-remove {
         flex: none;
         background: none;
@@ -429,32 +543,135 @@
         color: inherit;
         opacity: 0.6;
         cursor: pointer;
+      }
+      .queue-item-remove {
         font-size: 16px;
       }
-      .queue-item-remove:hover { opacity: 1; }
-      .queue-empty { opacity: 0.6; padding: 8px; }
-      .queue-item-play {
-        flex: none;
-        background: none;
-        border: 0;
-        color: inherit;
+      .queue-item-play:hover,
+      .queue-item-remove:hover {
+        opacity: 1;
+      }
+      .queue-empty {
         opacity: 0.6;
+        padding: 8px;
+      }
+
+      /* floating "open queue" button, hidden on desktop */
+      .queue-fab {
+        display: none;
+        position: fixed;
+        right: 0;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: var(--z-fab);
+        align-items: center;
+        gap: 6px;
+        padding: 12px 10px 12px 12px;
+        border: 1px solid var(--line);
+        border-right: 0;
+        border-radius: 14px 0 0 14px;
+        background: var(--surface-2);
+        color: var(--text);
+        font: inherit;
+        font-size: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+      }
+      .queue-fab .badge {
+        min-width: 20px;
+        padding: 1px 6px;
+        border-radius: 999px;
+        background: var(--accent);
+        color: #082f49;
+        font-size: 0.72rem;
+        text-align: center;
+      }
+
+      /* =====================================================================
+         8. SHARED DRAWER PIECES (backdrop + menu drawer)
+         ===================================================================== */
+      .backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.55);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 0.25s ease;
+        z-index: var(--z-backdrop);
+      }
+      .backdrop.is-open {
+        opacity: 1;
+        pointer-events: auto;
+      }
+
+      /* menu drawer: slides in from the right, app name on top, log out at the bottom */
+      .menu-drawer {
+        position: fixed;
+        top: 0;
+        right: 0;
+        bottom: 0;
+        width: var(--drawer-width);
+        display: flex;
+        flex-direction: column;
+        background: var(--surface);
+        border-left: 1px solid var(--line);
+        box-shadow: -16px 0 40px rgba(0, 0, 0, 0.4);
+        z-index: var(--z-drawer);
+        transform: translateX(100%);
+        visibility: hidden;
+        transition:
+          transform 0.25s ease,
+          visibility 0s linear 0.25s;
+      }
+      .menu-drawer.is-open {
+        transform: none;
+        visibility: visible;
+        transition:
+          transform 0.25s ease,
+          visibility 0s;
+      }
+      .menu-top {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 16px;
+        border-bottom: 1px solid var(--line);
+      }
+      .app-name {
+        font-size: 1.05rem;
+        font-weight: 700;
+        letter-spacing: -0.02em;
+      }
+      .menu-body {
+        flex: 1; /* empty space: pushes log out to the bottom, room for future links */
+        overflow-y: auto;
+        padding: 16px;
+      }
+      .menu-bottom {
+        margin: 0;
+        padding: 16px calc(16px) calc(16px + env(safe-area-inset-bottom, 0px));
+        border-top: 1px solid var(--line);
+      }
+      .logout-btn {
+        width: 100%;
+        padding: 12px;
+        border-radius: 12px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+        color: var(--text);
+        font: inherit;
+        font-weight: 600;
         cursor: pointer;
       }
-      .queue-item-play:hover { opacity: 1; }
-
-      .track.is-located {
-        animation: locate-flash 1.8s ease;
-      }
-      @keyframes locate-flash {
-        0%, 60% { box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.6); }
-        100%    { box-shadow: 0 0 0 2px transparent; }
+      .logout-btn:hover {
+        border-color: var(--accent);
       }
 
-      @media (max-width: 900px) {
-        .layout { grid-template-columns: 1fr; }
-        .queue-panel { position: static; max-height: none; }
-      }
+      /* =====================================================================
+         9. BOTTOM PLAYER
+         ===================================================================== */
       .player {
         display: none;
         position: fixed;
@@ -468,7 +685,7 @@
         border: 1px solid var(--line);
         backdrop-filter: blur(16px);
         box-shadow: 0 16px 40px rgba(0, 0, 0, 0.35);
-        z-index: 5;
+        z-index: var(--z-player);
       }
       .player.is-open {
         display: block;
@@ -482,17 +699,29 @@
       .seek-row {
         margin-top: 10px;
       }
-      .locate-btn {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 32px;
-        height: 32px;
-        padding: 0;
+      .player-title {
+        flex: 1;
+        min-width: 0;
+        font-weight: 600;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
-      .locate-btn:disabled {
-        opacity: 0.35;
-        cursor: default;
+      .time {
+        color: var(--muted);
+        font-size: 0.75rem;
+        font-variant-numeric: tabular-nums;
+        width: 40px;
+      }
+      .time.end {
+        text-align: right;
+      }
+      #scrub {
+        flex: 1;
+        width: 100%;
+      }
+      .volume {
+        width: 88px;
       }
       .video-size-control {
         display: none;
@@ -514,59 +743,6 @@
         text-align: right;
         font-variant-numeric: tabular-nums;
       }
-      .player-title {
-        flex: 1;
-        min-width: 0;
-        font-weight: 600;
-        white-space: nowrap;
-        overflow: hidden;
-        text-overflow: ellipsis;
-      }
-      .icon-btn,
-      .transport {
-        border: 0;
-        background: var(--text);
-        color: #082f49;
-        border-radius: 999px;
-        cursor: pointer;
-        font-weight: 700;
-      }
-      .transport {
-        width: 42px;
-        height: 42px;
-        font-size: 0.95rem;
-      }
-      .icon-btn {
-        background: transparent;
-        color: var(--text);
-        border: 1px solid var(--line);
-        padding: 8px 10px;
-      }
-      .time {
-        color: var(--muted);
-        font-size: 0.75rem;
-        font-variant-numeric: tabular-nums;
-        width: 40px;
-      }
-      .time.end {
-        text-align: right;
-      }
-      input[type="range"] {
-        accent-color: var(--accent);
-      }
-      #scrub {
-        flex: 1;
-        width: 100%;
-      }
-      .volume {
-        width: 88px;
-      }
-      audio {
-        display: none;
-      }
-      video {
-        display: none;
-      }
       .player.is-video video {
         display: block;
         width: 100%;
@@ -576,7 +752,60 @@
         border-radius: 12px;
         margin-top: 8px;
       }
+
+      /* =====================================================================
+         10. RESPONSIVE
+         ===================================================================== */
+
+      /* Tablet and phone: the queue leaves the page and becomes a left drawer */
+      @media (max-width: 900px) {
+        .layout {
+          grid-template-columns: 1fr;
+        }
+
+        .queue-panel {
+          position: fixed;
+          top: 0;
+          bottom: 0;
+          right: 0;
+          width: var(--drawer-width);
+          max-height: none;
+          border-radius: 16px 0 0 16px;
+          border-right: 0;
+          background: var(--surface);
+          box-shadow: -16px 0 40px rgba(0, 0, 0, 0.4);
+          padding-top: calc(16px + env(safe-area-inset-top, 0px));
+          padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+          z-index: var(--z-drawer);
+          transform: translateX(100%);
+          visibility: hidden;
+          transition:
+            transform 0.25s ease,
+            visibility 0s linear 0.25s;
+        }
+        .queue-panel.is-open {
+          transform: none;
+          visibility: visible;
+          transition:
+            transform 0.25s ease,
+            visibility 0s;
+        }
+        .queue-list {
+          max-height: none;
+        }
+        .queue-close {
+          display: inline-flex;
+        }
+        .queue-fab {
+          display: inline-flex;
+        }
+      }
+
+      /* Phone */
       @media (max-width: 680px) {
+        body {
+          padding: 20px 14px 168px;
+        }
         .section-head {
           flex-direction: column;
           align-items: stretch;
@@ -592,28 +821,54 @@
           flex: 1 1 140px;
           min-width: 140px;
         }
-        .library-tools .media-filter {
-          flex: 0 0 132px;
-          width: 132px;
-        }
         .volume {
           width: 64px;
         }
       }
+
+      @media (prefers-reduced-motion: reduce) {
+        .menu-drawer,
+        .queue-panel,
+        .backdrop {
+          transition: none !important;
+        }
+      }
     </style>
   </head>
+
   <body>
-    <div class = "layout">
-      <div class="wrap">
-        <header>
-          <h1>Music</h1>
-          <p class="lead">
-            Newest files first. The top row fills in as you play.
-          </p>
-          <form method="post" action="/logout">
-            <button class="icon-btn" type="submit">Log out</button>
-          </form>
-        </header>
+    <!-- ===================== TOP BAR ===================== -->
+    <header class="topbar">
+      <div>
+        <h1>Music</h1>
+        <p class="lead">Newest files first. The top row fills in as you play.</p>
+      </div>
+      <button
+        id="menuToggle"
+        class="icon-btn square"
+        type="button"
+        aria-label="Open menu"
+        aria-expanded="false"
+        aria-controls="menuDrawer"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          width="20"
+          height="20"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          aria-hidden="true"
+        >
+          <path d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
+    </header>
+
+    <!-- ===================== MAIN LAYOUT ===================== -->
+    <div class="layout">
+      <main class="wrap">
         {{if .Resume}}
         <div
           id="savedPlaybackState"
@@ -706,23 +961,40 @@
                 tabindex="0"
                 title="Add to queue"
                 aria-label="Add {{.Title}} to queue"
-              >+</span>
+                >+</span
+              >
             </button>
             {{end}} {{else}}
             <p class="empty">No audio files found in the music folder.</p>
             {{end}}
           </div>
         </section>
-      </div>
+      </main>
+
+      <!-- Queue: right column on desktop, left drawer on small screens -->
       <aside class="queue-panel" id="queuePanel" aria-label="Queue">
         <div class="queue-head">
           <h2>Queue</h2>
-          <button id="clearQueue" class="icon-btn" type="button">Clear</button>
+          <div class="queue-actions">
+            <button id="clearQueue" class="icon-btn" type="button">Clear</button>
+            <button
+              id="closeQueue"
+              class="icon-btn queue-close"
+              type="button"
+              aria-label="Close queue"
+            >
+              ✕
+            </button>
+          </div>
         </div>
 
-        <div class="queue-now">
-          <div class="queue-label">Now playing</div>
-          <div id="queueNowTitle" class="queue-now-title">Nothing playing</div>
+        <div class="queue-label">Now playing</div>
+        <div
+          id="queueNowTitle"
+          class="queue-now-title"
+          title="Show in list"
+        >
+          Nothing playing
         </div>
 
         <div class="queue-label">Up next</div>
@@ -730,6 +1002,56 @@
       </aside>
     </div>
 
+    <!-- ===================== FLOATING QUEUE BUTTON (small screens) ===================== -->
+    <button
+      id="queueFab"
+      class="queue-fab"
+      type="button"
+      aria-label="Open queue"
+      aria-expanded="false"
+      aria-controls="queuePanel"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        width="18"
+        height="18"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        aria-hidden="true"
+      >
+        <path d="M4 6h12M4 12h12M4 18h8M19 14v6M16 17h6" />
+      </svg>
+      <span class="badge" id="queueCount">0</span>
+    </button>
+
+    <!-- ===================== BACKDROP + MENU DRAWER ===================== -->
+    <div class="backdrop" id="backdrop"></div>
+
+    <nav
+      class="menu-drawer"
+      id="menuDrawer"
+      aria-label="Main menu"
+    >
+      <div class="menu-top">
+        <span class="app-name">Go Audio Streamer</span>
+        <button
+          id="closeMenu"
+          class="icon-btn square"
+          type="button"
+          aria-label="Close menu"
+        >
+          ✕
+        </button>
+      </div>
+      <div class="menu-body"><!-- future menu links go here --></div>
+      <form class="menu-bottom" method="post" action="/logout">
+        <button class="logout-btn" type="submit">Log out</button>
+      </form>
+    </nav>
+
+    <!-- ===================== BOTTOM PLAYER ===================== -->
     <div class="player" id="player">
       <div class="player-row">
         <button
@@ -760,16 +1082,23 @@
         </button>
         <div class="player-title" id="playerTitle">Nothing playing</div>
         <button
-          class="icon-btn locate-btn"
+          class="icon-btn square"
           id="locateCurrent"
           type="button"
           aria-label="Scroll to current song in list"
           title="Show in list"
           disabled
         >
-          <svg viewBox="0 0 24 24" width="16" height="16" fill="none"
-              stroke="currentColor" stroke-width="2" stroke-linecap="round"
-              aria-hidden="true">
+          <svg
+            viewBox="0 0 24 24"
+            width="16"
+            height="16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="2"
+            stroke-linecap="round"
+            aria-hidden="true"
+          >
             <circle cx="12" cy="12" r="7" />
             <circle cx="12" cy="12" r="1.5" fill="currentColor" />
             <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
@@ -816,164 +1145,244 @@
     </div>
 
     <script>
-      const audio = document.getElementById("audio");
-      const video = document.getElementById("video");
-      const player = document.getElementById("player");
-      const playerTitle = document.getElementById("playerTitle");
-      const videoSize = document.getElementById("videoSize");
-      const videoSizeValue = document.getElementById("videoSizeValue");
-      const savedPlaybackState = document.getElementById("savedPlaybackState");
+      /* =====================================================================
+         HOW THIS FILE IS ORGANIZED
+           1. DOM      every element we touch, looked up once
+           2. STATE    the few variables that change over time
+           3. HELPERS  small pure functions
+           4. LIBRARY  tiles, song rows, search/filter, list/grid view
+           5. PLAYER   play a track, progress saving, play counts
+           6. QUEUE    add / play next / render the queue panel
+           7. DRAWERS  hamburger menu + queue drawer on small screens
+           8. EVENTS   all addEventListener calls in one place
+           9. START    what runs on page load
+         ===================================================================== */
 
-      function decorateTile(tile) {
-        const file = tile.dataset.file || "";
-        if (!file) return;
-        const existing = tile.querySelector(".tile-thumb");
-        if (existing) existing.remove();
+      /* ---------------------------------------------------------------------
+         1. DOM
+         --------------------------------------------------------------------- */
+      const $ = (id) => document.getElementById(id);
 
-        const thumb = document.createElement("div");
-        thumb.className = "tile-thumb";
-        tile.title = tile.dataset.title || "";
+      const dom = {
+        // media
+        audio: $("audio"),
+        video: $("video"),
+        // player bar
+        player: $("player"),
+        playerTitle: $("playerTitle"),
+        playPause: $("playPause"),
+        previousTrack: $("previousTrack"),
+        nextTrack: $("nextTrack"),
+        locateCurrent: $("locateCurrent"),
+        scrub: $("scrub"),
+        curTime: $("curTime"),
+        durTime: $("durTime"),
+        volume: $("volume"),
+        videoSize: $("videoSize"),
+        videoSizeValue: $("videoSizeValue"),
+        // library
+        allSongs: $("allSongs"),
+        mostPlayed: $("mostPlayed"),
+        search: $("search"),
+        mediaFilter: $("mediaFilter"),
+        listView: $("listView"),
+        gridView: $("gridView"),
+        savedPlaybackState: $("savedPlaybackState"), // only exists if there is something to resume
+        // queue
+        queuePanel: $("queuePanel"),
+        queueList: $("queueList"),
+        queueNowTitle: $("queueNowTitle"),
+        queueCount: $("queueCount"),
+        queueFab: $("queueFab"),
+        clearQueue: $("clearQueue"),
+        closeQueue: $("closeQueue"),
+        // drawers
+        menuDrawer: $("menuDrawer"),
+        menuToggle: $("menuToggle"),
+        closeMenu: $("closeMenu"),
+        backdrop: $("backdrop"),
+      };
 
-        const label = document.createElement("div");
-        label.className = "thumb-label";
-        label.textContent = isVideoFile(file)
-          ? "VIDEO"
-          : (tile.dataset.title || "?").trim().charAt(0).toUpperCase() || "?";
-        thumb.appendChild(label);
+      /* ---------------------------------------------------------------------
+         2. STATE
+         --------------------------------------------------------------------- */
+      const MIN_VIDEO_WIDTH = 320;
+      const MAX_VIDEO_WIDTH = 1200;
+      const DEFAULT_VIDEO_WIDTH = 760;
+      const AUDIO_PLAYER_WIDTH = 880;
 
-        const playButton = document.createElement("button");
-        playButton.className = "disc play-btn";
-        playButton.type = "button";
-        playButton.dataset.file = file;
-        playButton.dataset.title = tile.dataset.title || "";
-        playButton.textContent = "▶";
-        playButton.setAttribute(
-          "aria-label",
-          "Play " + (tile.dataset.title || "track"),
-        );
-        thumb.appendChild(playButton);
+      const state = {
+        currentFile: "", // relative path of the loaded song ("" = nothing yet)
+        activeMedia: dom.audio, // whichever of <audio>/<video> is in use
+        scrubbing: false, // true while dragging the seek bar
+        countArmed: false, // true until the play count for this song is sent
+        videoWidth: loadSavedVideoWidth(),
+        queue: [], // upcoming songs: [{ file, title }, ...]
+        openDrawer: null, // "menu" | "queue" | null
+      };
 
-        // const queueButton = document.createElement("button");
-        // queueButton.className = "disc queue-btn";
-        // queueButton.type = "button";
-        // queueButton.textContent = "+";
-        // queueButton.title = "Add to queue";
-        // queueButton.setAttribute(
-        //   "aria-label",
-        //   "Add " + (tile.dataset.title || "track") + " to queue",
-        // );
-        // thumb.appendChild(queueButton);
-        tile.insertBefore(thumb, tile.firstChild);
-      }
-      const playPause = document.getElementById("playPause");
-      const scrub = document.getElementById("scrub");
-      const curTime = document.getElementById("curTime");
-      const durTime = document.getElementById("durTime");
-      const volume = document.getElementById("volume");
-      const search = document.getElementById("search");
-      const mediaFilter = document.getElementById("mediaFilter");
-      const allSongs = document.getElementById("allSongs");
-      const listView = document.getElementById("listView");
-      const gridView = document.getElementById("gridView");
-
-      let currentFile = "";
-      let activeMedia = audio;
-      let scrubbing = false;
-      let countArmed = false;
-      let savedVideoWidth = Number(localStorage.getItem("videoPlayerWidth"));
-      if (!Number.isFinite(savedVideoWidth) || savedVideoWidth < 320) {
-        savedVideoWidth = 760;
-      }
-      // songQueue holds the *upcoming* songs; the next one is taken off the front.
-      let queue = { songQueue: [] };
-
-      const locateCurrent = document.getElementById("locateCurrent");
-
-      locateCurrent.addEventListener("click", () => scrollToSong(currentFile));
-
-      function setVideoWidth(value, save = true) {
-        const width = Math.min(1200, Math.max(320, Number(value) || 760));
-        videoSize.value = String(width);
-        videoSizeValue.value = `${width} px`;
-        player.style.setProperty("--player-width", `${width}px`);
-        if (save) {
-          savedVideoWidth = width;
-          localStorage.setItem("videoPlayerWidth", String(width));
-        }
+      function loadSavedVideoWidth() {
+        const saved = Number(localStorage.getItem("videoPlayerWidth"));
+        return Number.isFinite(saved) && saved >= MIN_VIDEO_WIDTH
+          ? saved
+          : DEFAULT_VIDEO_WIDTH;
       }
 
-      setVideoWidth(savedVideoWidth, false);
-      videoSize.addEventListener("input", () => {
-        setVideoWidth(videoSize.value);
-      });
-
+      /* ---------------------------------------------------------------------
+         3. HELPERS
+         --------------------------------------------------------------------- */
       function isVideoFile(file) {
         return /\.(mp4|m4v|mov|webm|mkv|avi|wmv|flv|3gp)$/i.test(file || "");
       }
 
       function mediaFor(file) {
-        return isVideoFile(file) ? video : audio;
+        return isVideoFile(file) ? dom.video : dom.audio;
       }
 
-      function setLibraryView(view) {
-        const grid = view === "grid";
-        allSongs.classList.toggle("is-grid", grid);
-        listView.setAttribute("aria-pressed", String(!grid));
-        gridView.setAttribute("aria-pressed", String(grid));
-
-        allSongs.querySelectorAll(".track").forEach((track) => {
-          const existing = track.querySelector(".track-cover");
-          if (!grid) {
-            if (existing) existing.remove();
-            return;
-          }
-          if (existing) return;
-
-          const cover = document.createElement("span");
-          cover.className = "track-cover";
-          const initial = document.createElement("span");
-          initial.className = "track-cover-initial";
-          initial.textContent =
-            Array.from((track.dataset.title || "?").trim())[0]?.toUpperCase() ||
-            "?";
-          cover.appendChild(initial);
-
-          const kind = document.createElement("span");
-          kind.className = "track-cover-kind";
-          kind.textContent = isVideoFile(track.dataset.file)
-            ? "Video"
-            : "Audio";
-          cover.appendChild(kind);
-          track.insertBefore(cover, track.firstChild);
-        });
-      }
-
-      function fmt(value) {
+      // "75" -> "1:15"
+      function formatTime(value) {
         const total = Math.max(0, Math.floor(Number(value) || 0));
         const minutes = Math.floor(total / 60);
         const seconds = String(total % 60).padStart(2, "0");
         return minutes + ":" + seconds;
       }
 
-      function titleFor(file) {
-        const el = document.querySelector(
-          '[data-file="' + CSS.escape(file) + '"]',
+      // Find an element that has data-file="<file>", optionally limited by a selector.
+      function findByFile(file, selector = "") {
+        return document.querySelector(
+          selector + '[data-file="' + CSS.escape(file) + '"]',
         );
+      }
+
+      function titleFor(file) {
+        const el = findByFile(file);
         if (el && el.dataset.title) return el.dataset.title;
         const name = file.split("/").pop() || file;
         return name.replace(/\.[^.]+$/, "");
       }
 
-      function syncActive() {
-        const playing = currentFile && activeMedia && !activeMedia.paused;
-        document.querySelectorAll(".tile, .track").forEach((el) => {
-          const on = el.dataset.file === currentFile;
-          el.classList.toggle("is-active", on);
-          const mark = el.querySelector(".play-btn");
-          if (!mark || mark.classList.contains("disc")) return;
-          mark.textContent = on && playing ? "⏸" : "▶";
+      function firstLetter(text) {
+        return Array.from((text || "?").trim())[0]?.toUpperCase() || "?";
+      }
+
+      /* ---------------------------------------------------------------------
+         4. LIBRARY (tiles, rows, filter, view mode)
+         --------------------------------------------------------------------- */
+
+      // Adds the thumbnail + round play button to a "Most played" tile.
+      function decorateTile(tile) {
+        const file = tile.dataset.file || "";
+        if (!file) return;
+        const title = tile.dataset.title || "";
+
+        tile.querySelector(".tile-thumb")?.remove();
+        tile.title = title;
+
+        const label = document.createElement("div");
+        label.className = "thumb-label";
+        label.textContent = isVideoFile(file) ? "VIDEO" : firstLetter(title);
+
+        const playButton = document.createElement("button");
+        playButton.className = "disc play-btn";
+        playButton.type = "button";
+        playButton.dataset.file = file;
+        playButton.dataset.title = title;
+        playButton.textContent = "▶";
+        playButton.setAttribute("aria-label", "Play " + (title || "track"));
+
+        const thumb = document.createElement("div");
+        thumb.className = "tile-thumb";
+        thumb.append(label, playButton);
+        tile.insertBefore(thumb, tile.firstChild);
+      }
+
+      function decorateAllTiles() {
+        document.querySelectorAll(".tile").forEach(decorateTile);
+      }
+
+      // Switch between "list" and "grid". Grid rows get a cover block.
+      function setLibraryView(view) {
+        const grid = view === "grid";
+        dom.allSongs.classList.toggle("is-grid", grid);
+        dom.listView.setAttribute("aria-pressed", String(!grid));
+        dom.gridView.setAttribute("aria-pressed", String(grid));
+
+        dom.allSongs.querySelectorAll(".track").forEach((track) => {
+          const existing = track.querySelector(".track-cover");
+          if (!grid) {
+            existing?.remove();
+            return;
+          }
+          if (existing) return;
+
+          const initial = document.createElement("span");
+          initial.className = "track-cover-initial";
+          initial.textContent = firstLetter(track.dataset.title);
+
+          const kind = document.createElement("span");
+          kind.className = "track-cover-kind";
+          kind.textContent = isVideoFile(track.dataset.file) ? "Video" : "Audio";
+
+          const cover = document.createElement("span");
+          cover.className = "track-cover";
+          cover.append(initial, kind);
+          track.insertBefore(cover, track.firstChild);
         });
-        playPause.textContent = playing ? "⏸" : "▶";
+      }
+
+      // Hide rows that don't match the search box or the media-type dropdown.
+      function filterLibrary() {
+        const term = dom.search.value.trim().toLowerCase();
+        const type = dom.mediaFilter.value;
+
+        dom.allSongs.querySelectorAll(".track").forEach((row) => {
+          const text = (
+            row.dataset.title +
+            " " +
+            (row.dataset.folder || "")
+          ).toLowerCase();
+          const matchesText = term === "" || text.includes(term);
+          const matchesType =
+            type === "all" || (type === "video") === isVideoFile(row.dataset.file);
+          row.hidden = !matchesText || !matchesType;
+        });
+      }
+
+      // Smooth-scroll the "All songs" list to a song and flash it.
+      function scrollToSong(file) {
+        if (!file) return;
+        const row = findByFile(file, ".track");
+        if (!row) return;
+
+        if (row.hidden) {
+          dom.search.value = "";
+          dom.mediaFilter.value = "all";
+          filterLibrary();
+        }
+
+        row.scrollIntoView({ behavior: "smooth", block: "center" });
+
+        row.classList.remove("is-located");
+        void row.offsetWidth; // restart the animation if clicked twice
+        row.classList.add("is-located");
+        setTimeout(() => row.classList.remove("is-located"), 1800);
+      }
+
+      // Highlight the current song and sync every play/pause icon.
+      function syncActive() {
+        const { currentFile, activeMedia } = state;
+        const playing = Boolean(currentFile) && !activeMedia.paused;
+
+        document.querySelectorAll(".tile, .track").forEach((el) => {
+          const isCurrent = el.dataset.file === currentFile;
+          el.classList.toggle("is-active", isCurrent);
+
+          const mark = el.querySelector(".play-btn");
+          if (!mark || mark.classList.contains("disc")) return; // tiles keep a plain ▶
+          mark.textContent = isCurrent && playing ? "⏸" : "▶";
+        });
+
+        dom.playPause.textContent = playing ? "⏸" : "▶";
         if ("mediaSession" in navigator) {
           navigator.mediaSession.playbackState = activeMedia.paused
             ? "paused"
@@ -981,157 +1390,179 @@
         }
       }
 
-      function scrollToSong(file) {
-        if (!file) return;
-        let row = allSongs.querySelector(
-          '.track[data-file="' + CSS.escape(file) + '"]',
-        );
-        if (!row) return;
-
-        // if search/filter is hiding it, clear them so the song can be shown
-        if (row.hidden) {
-          search.value = "";
-          mediaFilter.value = "all";
-          filterLibrary();
-        }
-
-        row.scrollIntoView({ behavior: "smooth", block: "center" });
-
-        // brief highlight so you can spot it
-        row.classList.remove("is-located");
-        void row.offsetWidth; // restart the animation if clicked twice
-        row.classList.add("is-located");
-        setTimeout(() => row.classList.remove("is-located"), 1800);
-      }
-
+      // After a play is recorded: +1 on the row, and add/sort the "Most played" tile.
       function bumpCount(file, title) {
-        const track = document.querySelector(
-          '.track[data-file="' + CSS.escape(file) + '"]',
-        );
-        const existing = document.querySelector(
-          '.tile[data-file="' + CSS.escape(file) + '"]',
-        );
-        const bump = (el, selector) => {
-          const count = el.querySelector(selector);
+        const increment = (el) => {
+          const count = el?.querySelector(".play-count");
           if (count) count.textContent = String(Number(count.textContent) + 1);
         };
-        if (track) bump(track, ".play-count");
 
-        const strip = document.getElementById("mostPlayed");
-        const empty = strip.querySelector(".empty");
-        if (empty) empty.remove();
+        const row = findByFile(file, ".track");
+        increment(row);
 
-        let tile = existing;
+        dom.mostPlayed.querySelector(".empty")?.remove();
+
+        let tile = findByFile(file, ".tile");
         if (!tile) {
-          tile = document.createElement("article");
-          tile.className = "tile";
-          tile.dataset.file = file;
-          tile.dataset.title = title;
-          if (track) tile.dataset.songId = track.dataset.songId;
-          tile.title = title;
-          const copy = document.createElement("div");
-          copy.className = "tile-copy";
-          const name = document.createElement("div");
-          name.className = "tile-title";
-          const nameText = document.createElement("span");
-          nameText.className = "tile-title-text";
-          nameText.textContent = title;
-          name.appendChild(nameText);
-          const meta = document.createElement("div");
-          meta.className = "meta";
-          meta.innerHTML = '<span class="play-count">0</span> plays by you';
-          copy.append(name, meta);
-          tile.append(copy);
+          tile = createTile(file, title, row?.dataset.songId);
           decorateTile(tile);
-          strip.prepend(tile);
+          dom.mostPlayed.prepend(tile);
         }
-        bump(tile, ".play-count");
-        const tiles = [...strip.querySelectorAll(".tile")];
-        tiles.sort(
-          (a, b) =>
-            Number(b.querySelector(".play-count").textContent) -
-            Number(a.querySelector(".play-count").textContent),
-        );
-        tiles.forEach((item) => strip.appendChild(item));
+        increment(tile);
+
+        // keep the strip sorted by play count, highest first
+        const countOf = (t) => Number(t.querySelector(".play-count").textContent);
+        [...dom.mostPlayed.querySelectorAll(".tile")]
+          .sort((a, b) => countOf(b) - countOf(a))
+          .forEach((t) => dom.mostPlayed.appendChild(t));
       }
 
-      // simple work to play the track, and if it is already playing, pause it. If it is a new track, play it and update the UI accordingly.
-      function playTrack(file, title, fromHistory, startAt = 0, startPaused = false) {
+      function createTile(file, title, songId) {
+        const tile = document.createElement("article");
+        tile.className = "tile";
+        tile.dataset.file = file;
+        tile.dataset.title = title;
+        if (songId) tile.dataset.songId = songId;
+        tile.title = title;
+
+        const nameText = document.createElement("span");
+        nameText.className = "tile-title-text";
+        nameText.textContent = title;
+        const name = document.createElement("div");
+        name.className = "tile-title";
+        name.appendChild(nameText);
+
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.innerHTML = '<span class="play-count">0</span> plays by you';
+
+        const copy = document.createElement("div");
+        copy.className = "tile-copy";
+        copy.append(name, meta);
+        tile.append(copy);
+        return tile;
+      }
+
+      /* ---------------------------------------------------------------------
+         5. PLAYER
+         --------------------------------------------------------------------- */
+
+      function setVideoWidth(value, save = true) {
+        const width = Math.min(
+          MAX_VIDEO_WIDTH,
+          Math.max(MIN_VIDEO_WIDTH, Number(value) || DEFAULT_VIDEO_WIDTH),
+        );
+        dom.videoSize.value = String(width);
+        dom.videoSizeValue.value = `${width} px`;
+        dom.player.style.setProperty("--player-width", `${width}px`);
+        if (save) {
+          state.videoWidth = width;
+          localStorage.setItem("videoPlayerWidth", String(width));
+        }
+      }
+
+      /*
+        Main entry point for playing something.
+          - Same song as now  -> toggle play/pause.
+          - Different song    -> stop the old one, load and play the new one.
+        options:
+          fromHistory  true when the URL already has ?song= (skips pushState)
+          startAt      seconds to jump to once metadata has loaded
+          startPaused  load the song but don't start it (used for "resume")
+      */
+      function playTrack(file, title, options = {}) {
+        const { fromHistory = false, startAt = 0, startPaused = false } = options;
         if (!file) return;
+
         const media = mediaFor(file);
-        if (currentFile === file && media.src) {
+        const displayTitle = title || titleFor(file);
+
+        if (state.currentFile === file && media.src) {
           if (media.paused) media.play().catch(() => {});
           else media.pause();
           syncActive();
           return;
         }
 
-        audio.pause();
-        video.pause();
-        if (currentFile && activeMedia.src) savePlaybackProgress();
-        activeMedia = media;
-        audio.src = "";
-        video.src = "";
-        countArmed = true;
+        stopCurrentMedia();
+        state.activeMedia = media;
+        state.currentFile = file;
+        state.countArmed = true;
+
+        loadSource(media, file, startAt, startPaused);
+        showPlayer(file, displayTitle);
+        updateMediaSession(displayTitle);
+        if (!fromHistory) pushSongToUrl(file);
+        renderQueue();
+
+        if (startPaused) {
+          media.load();
+          syncActive();
+          return;
+        }
+        media
+          .play()
+          .then(() => recordPlay(media, file))
+          .catch((err) => {
+            console.error("Playback error:", err);
+            syncActive();
+          });
+      }
+
+      function stopCurrentMedia() {
+        dom.audio.pause();
+        dom.video.pause();
+        if (state.currentFile && state.activeMedia.src) savePlaybackProgress();
+        dom.audio.src = "";
+        dom.video.src = "";
+      }
+
+      function loadSource(media, file, startAt, startPaused) {
         if (startPaused) media.preload = "metadata";
         if (startAt > 0) {
           media.addEventListener(
             "loadedmetadata",
             () => {
-              if (currentFile !== file || !Number.isFinite(media.duration)) return;
-              media.currentTime = Math.min(
-                startAt,
-                Math.max(0, media.duration - 0.1),
-              );
+              if (state.currentFile !== file || !Number.isFinite(media.duration)) return;
+              media.currentTime = Math.min(startAt, Math.max(0, media.duration - 0.1));
             },
             { once: true },
           );
         }
-        activeMedia.src = "/stream?file=" + encodeURIComponent(file);
-        currentFile = file;
-        player.classList.remove("is-video");
-        if (isVideoFile(file)) {
-          player.classList.add("is-video");
-          setVideoWidth(savedVideoWidth, false);
-        } else {
-          player.style.setProperty("--player-width", "880px");
-        }
-        player.classList.add("is-open");
-        playerTitle.textContent = title || titleFor(file);
-        if (
-          "mediaSession" in navigator &&
-          typeof MediaMetadata !== "undefined"
-        ) {
-          navigator.mediaSession.metadata = new MediaMetadata({
-            title: title || titleFor(file),
-            artist: "My Music",
-            album: "Personal Library",
-          });
-        }
-        if (!fromHistory) {
-          const next = new URLSearchParams();
-          next.set("song", file);
-          const nextSearch = "?" + next.toString();
-          if (location.search !== nextSearch)
-            history.pushState({ file }, "", "/" + nextSearch);
-        }
-        if (startPaused) {
-          activeMedia.load();
-          syncActive();
-          return;
-        }
-        activeMedia
-          .play()
-          .then(() => handlePlaybackStarted(media, file))
-          .catch((err) => {
-            console.error("Playback error:", err);
-            syncActive();
-          });
-
-        renderQueue();
+        media.src = "/stream?file=" + encodeURIComponent(file);
       }
 
+      function showPlayer(file, title) {
+        dom.player.classList.remove("is-video");
+        if (isVideoFile(file)) {
+          dom.player.classList.add("is-video");
+          setVideoWidth(state.videoWidth, false);
+        } else {
+          dom.player.style.setProperty("--player-width", AUDIO_PLAYER_WIDTH + "px");
+        }
+        dom.player.classList.add("is-open");
+        dom.playerTitle.textContent = title;
+      }
+
+      function updateMediaSession(title) {
+        if (!("mediaSession" in navigator) || typeof MediaMetadata === "undefined") {
+          return;
+        }
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title,
+          artist: "My Music",
+          album: "Personal Library",
+        });
+      }
+
+      function pushSongToUrl(file) {
+        const search = "?" + new URLSearchParams({ song: file }).toString();
+        if (location.search !== search) history.pushState({ file }, "", "/" + search);
+      }
+
+      // Tell the server where we are in the song (also called every 5s while playing).
       function savePlaybackProgress(keepalive = false) {
+        const { currentFile, activeMedia } = state;
         if (!currentFile || !activeMedia.src || !Number.isFinite(activeMedia.currentTime)) {
           return;
         }
@@ -1145,110 +1576,31 @@
           }),
           keepalive,
         });
-        if (!keepalive) {
-          request.then((response) => {
-            if (!response.ok) {
-              console.error("Could not save playback position:", response.status);
-            }
-          }).catch((err) => console.error("Could not save playback position:", err));
-        }
+        if (keepalive) return;
+        request
+          .then((response) => {
+            if (!response.ok) console.error("Could not save playback position:", response.status);
+          })
+          .catch((err) => console.error("Could not save playback position:", err));
       }
 
-      function playAdjacentTrack(direction) {
-        const tracks = [...allSongs.querySelectorAll(".track")];
-        const currentIndex = tracks.findIndex(
-          (track) => track.dataset.file === currentFile,
-        );
-        if (currentIndex < 0) return;
-
-        for (
-          let index = currentIndex + direction;
-          index >= 0 && index < tracks.length;
-          index += direction
-        ) {
-          const track = tracks[index];
-          if (!track.hidden) {
-            playTrack(track.dataset.file, track.dataset.title, false);
-            return;
-          }
-        }
-      }
-
-      function addToQueue(file, title) {
-        if (!file) return;
-        for (const item of queue.songQueue) {
-          if (item.file === file) return; // already in queue
-        }
-        queue.songQueue.push({ file, title: title || titleFor(file) });
-        renderQueue();  
-
-        // nothing playing yet -> start the queue right away
-        if (!currentFile) playFromQueue();
-      }
-
-      function playFromQueue() {
-        const next = queue.songQueue.shift();
-        renderQueue();
-        if (!next) return false;
-
-        // same song as the current one: playTrack would toggle pause, so restart it
-        if (next.file === currentFile) {
-          activeMedia.currentTime = 0;
-          activeMedia.play().catch(() => {});
-          return true;
-        }
-        playTrack(next.file, next.title, false);
-        return true;
-      }
-
-      function playNextTrack() {
-        if (playFromQueue()) return;
-        playAdjacentTrack(1);
-      }
-
-      // Connect headphone and browser media controls
-      if ("mediaSession" in navigator) {
-        const mediaSession = navigator.mediaSession;
-
-        mediaSession.setActionHandler("nexttrack", () => {
-          playNextTrack();
-        });
-
-        mediaSession.setActionHandler("previoustrack", () => {
-          playAdjacentTrack(-1);
-        });
-
-        mediaSession.setActionHandler("play", () => {
-          if (activeMedia.src) {
-            activeMedia.play().catch(console.error);
-          }
-        });
-
-        mediaSession.setActionHandler("pause", () => {
-          activeMedia.pause();
-        });
-      }
-
-      function handleMediaEnded() {
-        syncActive();
-        playNextTrack();
-      }
-
-      function handlePlaybackStarted(target, expectedFile = currentFile) {
+      // Send "this song was played" to the server once per song load.
+      function recordPlay(target, expectedFile = state.currentFile) {
         if (
-          !countArmed ||
+          !state.countArmed ||
           !expectedFile ||
-          expectedFile !== currentFile ||
+          expectedFile !== state.currentFile ||
           !target.src
-        )
+        ) {
           return;
-        const srcFile = new URL(target.src, location.origin).searchParams.get(
-          "file",
-        );
+        }
+        const srcFile = new URL(target.src, location.origin).searchParams.get("file");
         if (srcFile !== expectedFile) return;
-        countArmed = false;
-        const file = currentFile;
-        const title = playerTitle.textContent;
+
+        state.countArmed = false;
+        const file = state.currentFile;
+        const title = dom.playerTitle.textContent;
+
         fetch("/played", {
           method: "POST",
           credentials: "same-origin",
@@ -1258,235 +1610,318 @@
           .then(async (response) => {
             if (!response.ok) {
               const details = await response.text();
-              throw new Error(
-                `/played failed (${response.status}): ${details}`,
-              );
+              throw new Error(`/played failed (${response.status}): ${details}`);
             }
             bumpCount(file, title);
           })
           .catch((err) => console.error("Could not record play:", err));
       }
 
-      audio.addEventListener("playing", () => handlePlaybackStarted(audio));
-      video.addEventListener("playing", () => handlePlaybackStarted(video));
+      // Previous / next song in the visible library order (-1 or +1).
+      function playAdjacentTrack(direction) {
+        const tracks = [...dom.allSongs.querySelectorAll(".track")];
+        const currentIndex = tracks.findIndex((t) => t.dataset.file === state.currentFile);
+        if (currentIndex < 0) return;
 
+        for (let i = currentIndex + direction; i >= 0 && i < tracks.length; i += direction) {
+          if (!tracks[i].hidden) {
+            playTrack(tracks[i].dataset.file, tracks[i].dataset.title);
+            return;
+          }
+        }
+      }
+
+      // Update the seek bar and the two time labels.
+      function paintTime() {
+        const media = state.activeMedia;
+        if (!Number.isFinite(media.duration)) return;
+        dom.scrub.max = String(media.duration);
+        if (!state.scrubbing) dom.scrub.value = String(media.currentTime);
+        dom.curTime.textContent = formatTime(media.currentTime);
+        dom.durTime.textContent = formatTime(media.duration);
+      }
+
+      /* ---------------------------------------------------------------------
+         6. QUEUE
+         --------------------------------------------------------------------- */
+
+      function addToQueue(file, title) {
+        if (!file) return;
+        if (state.queue.some((item) => item.file === file)) return; // no duplicates
+
+        state.queue.push({ file, title: title || titleFor(file) });
+        renderQueue();
+
+        // nothing loaded yet -> start playing right away
+        if (!state.currentFile) playFromQueue();
+      }
+
+      // Take the first queued song and play it. Returns false if the queue is empty.
+      function playFromQueue() {
+        const next = state.queue.shift();
+        renderQueue();
+        if (!next) return false;
+
+        // playTrack would pause if it's the same song, so restart it instead
+        if (next.file === state.currentFile) {
+          state.activeMedia.currentTime = 0;
+          state.activeMedia.play().catch(() => {});
+          return true;
+        }
+        playTrack(next.file, next.title);
+        return true;
+      }
+
+      // "Next" = queued song if there is one, otherwise next in the library.
+      function playNextTrack() {
+        if (playFromQueue()) return;
+        playAdjacentTrack(1);
+      }
+
+      function handleMediaEnded() {
+        syncActive();
+        playNextTrack();
+      }
+
+      // Draw the queue panel (and the badge on the floating button).
+      function renderQueue() {
+        dom.locateCurrent.disabled = !state.currentFile;
+        dom.queueCount.textContent = String(state.queue.length);
+        dom.queueNowTitle.textContent = state.currentFile
+          ? dom.playerTitle.textContent || titleFor(state.currentFile)
+          : "Nothing playing";
+
+        dom.queueList.textContent = "";
+
+        if (state.queue.length === 0) {
+          const empty = document.createElement("li");
+          empty.className = "queue-empty";
+          empty.textContent = "Queue is empty. Press + on a song to add it.";
+          dom.queueList.appendChild(empty);
+          return;
+        }
+
+        state.queue.forEach((item, index) => {
+          const li = document.createElement("li");
+          li.className = "queue-item";
+          li.append(
+            queueButton("queue-item-play", "play", index, "▶", "Play " + item.title + " now"),
+            queueButton("queue-item-title", "locate", index, item.title, "Show in list: " + item.title),
+            queueButton("queue-item-remove", "remove", index, "✕", "Remove " + item.title + " from queue"),
+          );
+          dom.queueList.appendChild(li);
+        });
+      }
+
+      function queueButton(className, action, index, text, label) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = className;
+        btn.dataset.action = action;
+        btn.dataset.index = String(index);
+        btn.textContent = text;
+        btn.title = label;
+        btn.setAttribute("aria-label", label);
+        return btn;
+      }
+
+      // Click on a button inside the queue list (play / locate / remove).
+      function handleQueueListClick(event) {
+        const btn = event.target.closest("button[data-action]");
+        if (!btn) return;
+        const index = Number(btn.dataset.index);
+        const item = state.queue[index];
+        if (!item) return;
+
+        switch (btn.dataset.action) {
+          case "remove":
+            state.queue.splice(index, 1);
+            renderQueue();
+            break;
+          case "play":
+            state.queue.splice(index, 1);
+            playTrack(item.file, item.title); // also re-renders the queue
+            break;
+          case "locate":
+            setDrawer(null); // on phones, close the drawer so the list is visible
+            scrollToSong(item.file);
+            break;
+        }
+      }
+
+      /* ---------------------------------------------------------------------
+         7. DRAWERS (hamburger menu on the right, queue on the left)
+         --------------------------------------------------------------------- */
+      const desktopQuery = window.matchMedia("(min-width: 901px)");
+
+      // Only one drawer is open at a time. Pass "menu", "queue" or null (close all).
+      function setDrawer(name) {
+        state.openDrawer = name;
+        dom.menuDrawer.classList.toggle("is-open", name === "menu");
+        dom.queuePanel.classList.toggle("is-open", name === "queue");
+        dom.backdrop.classList.toggle("is-open", name !== null);
+        dom.menuToggle.setAttribute("aria-expanded", String(name === "menu"));
+        dom.queueFab.setAttribute("aria-expanded", String(name === "queue"));
+      }
+
+      function toggleDrawer(name) {
+        setDrawer(state.openDrawer === name ? null : name);
+      }
+
+      /* ---------------------------------------------------------------------
+         8. EVENTS
+         --------------------------------------------------------------------- */
+
+      // ---- Clicks anywhere on the page: "+" buttons and play-on-click ----
       document.body.addEventListener("click", (event) => {
         const queueBtn = event.target.closest(".queue-btn");
         if (queueBtn) {
           const source = queueBtn.closest(".track, .tile");
-          if (source && source.dataset.file) {
+          if (source?.dataset.file) {
             addToQueue(source.dataset.file, source.dataset.title);
             queueBtn.textContent = "✓";
             setTimeout(() => (queueBtn.textContent = "+"), 800);
           }
-          return; // don't fall through to play
+          return; // don't fall through to "play this song"
         }
+
         const source = event.target.closest(".track, .tile");
-        if (!source || !source.dataset.file) return;
-        playTrack(source.dataset.file, source.dataset.title, false);
+        if (source?.dataset.file) playTrack(source.dataset.file, source.dataset.title);
       });
 
-      playPause.addEventListener("click", () => {
-        if (!activeMedia.src) return;
-        if (activeMedia.paused)
-          activeMedia
-            .play()
-            .then(syncActive)
-            .catch(() => {});
-        else activeMedia.pause();
-        syncActive();
-      });
-
-      document
-        .getElementById("previousTrack")
-        .addEventListener("click", () => playAdjacentTrack(-1));
-      document
-        .getElementById("nextTrack")
-        .addEventListener("click", () => playNextTrack());
-
-      volume.addEventListener("input", () => {
-        audio.volume = Number(volume.value);
-        video.volume = Number(volume.value);
-      });
-
-      scrub.addEventListener("pointerdown", () => {
-        scrubbing = true;
-      });
-      scrub.addEventListener("input", () => {
-        scrubbing = true;
-        curTime.textContent = fmt(scrub.value);
-      });
-      scrub.addEventListener("change", () => {
-        if (activeMedia.src) activeMedia.currentTime = Number(scrub.value);
-        scrubbing = false;
-      });
-
-      function paintTime() {
-        const media = activeMedia || audio;
-        if (!Number.isFinite(media.duration)) return;
-        scrub.max = String(media.duration);
-        if (!scrubbing) scrub.value = String(media.currentTime);
-        curTime.textContent = fmt(media.currentTime);
-        durTime.textContent = fmt(media.duration);
-      }
-
-      audio.addEventListener("timeupdate", paintTime);
-      audio.addEventListener("loadedmetadata", paintTime);
-      audio.addEventListener("play", syncActive);
-      audio.addEventListener("pause", () => {
-        syncActive();
-        if (activeMedia === audio) savePlaybackProgress();
-      });
-      audio.addEventListener("ended", handleMediaEnded);
-      video.addEventListener("timeupdate", paintTime);
-      video.addEventListener("loadedmetadata", paintTime);
-      video.addEventListener("play", syncActive);
-      video.addEventListener("pause", () => {
-        syncActive();
-        if (activeMedia === video) savePlaybackProgress();
-      });
-      video.addEventListener("ended", handleMediaEnded);
-
-      function filterLibrary() {
-        const term = search.value.trim().toLowerCase();
-        const selectedType = mediaFilter.value;
-        allSongs.querySelectorAll(".track").forEach((row) => {
-          const haystack = (
-            row.dataset.title +
-            " " +
-            (row.dataset.folder || "")
-          ).toLowerCase();
-          const matchesText = term === "" || haystack.includes(term);
-          const matchesType =
-            selectedType === "all" ||
-            (selectedType === "video") === isVideoFile(row.dataset.file);
-          row.hidden = !matchesText || !matchesType;
-        });
-      }
-
-      search.addEventListener("input", filterLibrary);
-      mediaFilter.addEventListener("change", filterLibrary);
-
-      window.setInterval(() => {
-        if (activeMedia && !activeMedia.paused && !activeMedia.ended) {
-          savePlaybackProgress();
+      document.addEventListener("keydown", (event) => {
+        if (event.key === "Escape") {
+          setDrawer(null);
+          return;
         }
+        // "+" is a <span role="button">, so give it Enter/Space support
+        if (event.key !== "Enter" && event.key !== " ") return;
+        const queueBtn = event.target.closest?.(".queue-btn");
+        if (!queueBtn) return;
+        event.preventDefault();
+        event.stopPropagation();
+        queueBtn.click();
+      });
+
+      // ---- Player controls ----
+      dom.playPause.addEventListener("click", () => {
+        const media = state.activeMedia;
+        if (!media.src) return;
+        if (media.paused) media.play().then(syncActive).catch(() => {});
+        else media.pause();
+        syncActive();
+      });
+      dom.previousTrack.addEventListener("click", () => playAdjacentTrack(-1));
+      dom.nextTrack.addEventListener("click", playNextTrack);
+      dom.locateCurrent.addEventListener("click", () => scrollToSong(state.currentFile));
+
+      dom.volume.addEventListener("input", () => {
+        dom.audio.volume = Number(dom.volume.value);
+        dom.video.volume = Number(dom.volume.value);
+      });
+      dom.videoSize.addEventListener("input", () => setVideoWidth(dom.videoSize.value));
+
+      dom.scrub.addEventListener("pointerdown", () => (state.scrubbing = true));
+      dom.scrub.addEventListener("input", () => {
+        state.scrubbing = true;
+        dom.curTime.textContent = formatTime(dom.scrub.value);
+      });
+      dom.scrub.addEventListener("change", () => {
+        if (state.activeMedia.src) state.activeMedia.currentTime = Number(dom.scrub.value);
+        state.scrubbing = false;
+      });
+
+      // ---- <audio> and <video> events (same handlers for both) ----
+      [dom.audio, dom.video].forEach((media) => {
+        media.addEventListener("playing", () => recordPlay(media));
+        media.addEventListener("timeupdate", paintTime);
+        media.addEventListener("loadedmetadata", paintTime);
+        media.addEventListener("play", syncActive);
+        media.addEventListener("pause", () => {
+          syncActive();
+          if (state.activeMedia === media) savePlaybackProgress();
+        });
+        media.addEventListener("ended", handleMediaEnded);
+      });
+
+      // ---- Headphone / lock-screen controls ----
+      if ("mediaSession" in navigator) {
+        const session = navigator.mediaSession;
+        session.setActionHandler("nexttrack", playNextTrack);
+        session.setActionHandler("previoustrack", () => playAdjacentTrack(-1));
+        session.setActionHandler("play", () => {
+          if (state.activeMedia.src) state.activeMedia.play().catch(console.error);
+        });
+        session.setActionHandler("pause", () => state.activeMedia.pause());
+      }
+
+      // ---- Library controls ----
+      dom.search.addEventListener("input", filterLibrary);
+      dom.mediaFilter.addEventListener("change", filterLibrary);
+      dom.listView.addEventListener("click", () => setLibraryView("list"));
+      dom.gridView.addEventListener("click", () => setLibraryView("grid"));
+
+      // ---- Queue panel ----
+      dom.queueList.addEventListener("click", handleQueueListClick);
+      dom.queueNowTitle.addEventListener("click", () => {
+        setDrawer(null);
+        scrollToSong(state.currentFile);
+      });
+      dom.clearQueue.addEventListener("click", () => {
+        state.queue.length = 0;
+        renderQueue();
+      });
+
+      // ---- Drawers ----
+      dom.menuToggle.addEventListener("click", () => toggleDrawer("menu"));
+      dom.closeMenu.addEventListener("click", () => setDrawer(null));
+      dom.queueFab.addEventListener("click", () => toggleDrawer("queue"));
+      dom.closeQueue.addEventListener("click", () => setDrawer(null));
+      dom.backdrop.addEventListener("click", () => setDrawer(null));
+      // growing the window to desktop width: the queue is a column again, so close its drawer
+      desktopQuery.addEventListener("change", (e) => {
+        if (e.matches && state.openDrawer === "queue") setDrawer(null);
+      });
+
+      // ---- Saving progress and browser history ----
+      window.setInterval(() => {
+        const media = state.activeMedia;
+        if (!media.paused && !media.ended) savePlaybackProgress();
       }, 5000);
       window.addEventListener("pagehide", () => savePlaybackProgress(true));
       document.addEventListener("visibilitychange", () => {
         if (document.visibilityState === "hidden") savePlaybackProgress(true);
       });
-
-      listView.addEventListener("click", () => setLibraryView("list"));
-      gridView.addEventListener("click", () => setLibraryView("grid"));
-
       window.addEventListener("popstate", () => {
         const song = new URLSearchParams(location.search).get("song");
         if (!song) {
-          audio.pause();
-          video.pause();
+          dom.audio.pause();
+          dom.video.pause();
           syncActive();
           return;
         }
-        playTrack(song, titleFor(song), true);
+        playTrack(song, titleFor(song), { fromHistory: true });
       });
 
-      document.querySelectorAll(".tile").forEach((tile) => decorateTile(tile));
-
-      const initial = new URLSearchParams(location.search).get("song");
-      if (savedPlaybackState) {
-        playTrack(
-          savedPlaybackState.dataset.file,
-          savedPlaybackState.dataset.title,
-          true,
-          Number(savedPlaybackState.dataset.position),
-          true,
-        );
-      } else if (initial) {
-        playTrack(initial, titleFor(initial), true);
-      }
-
-      const queueList = document.getElementById("queueList");
-      const queueNowTitle = document.getElementById("queueNowTitle");
-      const clearQueueBtn = document.getElementById("clearQueue");
-
-      function renderQueue() {
-        locateCurrent.disabled = !currentFile;
-
-        queueNowTitle.textContent = currentFile
-          ? playerTitle.textContent || titleFor(currentFile)
-          : "Nothing playing";
-        queueNowTitle.style.cursor = "pointer";
-        queueNowTitle.addEventListener("click", () => scrollToSong(currentFile));
-
-        queueList.textContent = "";
-
-        if (queue.songQueue.length === 0) {
-          const empty = document.createElement("li");
-          empty.className = "queue-empty";
-          empty.textContent = "Queue is empty. Press + on a song to add it.";
-          queueList.appendChild(empty);
-          return;
-        }
-
-        queue.songQueue.forEach((item, index) => {
-          const li = document.createElement("li");
-          li.className = "queue-item";
-
-          const play = document.createElement("button");
-          play.type = "button";
-          play.className = "queue-item-play";
-          play.dataset.index = String(index);
-          play.dataset.action = "play";
-          play.setAttribute("aria-label", "Play " + item.title + " now");
-          play.textContent = "▶";
-
-          const title = document.createElement("button");
-          title.type = "button";
-          title.className = "queue-item-title";
-          title.dataset.index = String(index);
-          title.dataset.action = "locate";
-          title.textContent = item.title;
-          title.title = "Show in list: " + item.title;
-
-          const remove = document.createElement("button");
-          remove.type = "button";
-          remove.className = "queue-item-remove";
-          remove.dataset.index = String(index);
-          remove.dataset.action = "remove";
-          remove.setAttribute("aria-label", "Remove " + item.title + " from queue");
-          remove.textContent = "✕";
-
-          li.append(play, title, remove);
-          queueList.appendChild(li);
-        });
-      }
-
-      queueList.addEventListener("click", (event) => {
-        const btn = event.target.closest("button[data-action]");
-        if (!btn) return;
-        const index = Number(btn.dataset.index);
-        const item = queue.songQueue[index];
-        if (!item) return;
-
-        if (btn.dataset.action === "remove") {
-          queue.songQueue.splice(index, 1);
-          renderQueue();
-        } else if (btn.dataset.action === "play") {
-          queue.songQueue.splice(index, 1);
-          playTrack(item.file, item.title, false);
-          renderQueue();
-        } else if (btn.dataset.action === "locate") {
-          scrollToSong(item.file);
-        }
-      });
-
-      clearQueueBtn.addEventListener("click", () => {
-        queue.songQueue.length = 0;
-        renderQueue();
-      });
-
+      /* ---------------------------------------------------------------------
+         9. START
+         --------------------------------------------------------------------- */
+      setVideoWidth(state.videoWidth, false);
+      decorateAllTiles();
       renderQueue();
+
+      const songFromUrl = new URLSearchParams(location.search).get("song");
+      if (dom.savedPlaybackState) {
+        // resume where the user left off, but paused
+        const { file, title, position } = dom.savedPlaybackState.dataset;
+        playTrack(file, title, {
+          fromHistory: true,
+          startAt: Number(position),
+          startPaused: true,
+        });
+      } else if (songFromUrl) {
+        playTrack(songFromUrl, titleFor(songFromUrl), { fromHistory: true });
+      }
     </script>
   </body>
 </html>

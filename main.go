@@ -668,6 +668,8 @@ func mostPlayed(songs []Song) []Song {
 		}
 		return out[i].PlayCount > out[j].PlayCount
 	})
+
+	out = out[:int(math.Min(float64(len(out)), 10))]
 	return out
 }
 
