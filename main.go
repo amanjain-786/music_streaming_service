@@ -461,6 +461,27 @@ func openDB(path string) (*sql.DB, error) {
 				position_seconds REAL NOT NULL DEFAULT 0,
 				updated_at       DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
 			);
+
+			CREATE TABLE IF NOT EXISTS playlists (
+				id         INTEGER PRIMARY KEY,
+				name       TEXT NOT NULL,
+				ownername  TEXT NOT NULL,
+				created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+				updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+			);
+
+			CREATE TABLE IF NOT EXISTS playlist_songs (
+				playlist_id INTEGER NOT NULL,
+				song_id     INTEGER NOT NULL,
+				position    INTEGER NOT NULL,
+
+				PRIMARY KEY (playlist_id, song_id),
+
+				FOREIGN KEY (playlist_id) REFERENCES playlists(id)
+					ON DELETE CASCADE,
+
+				FOREIGN KEY (song_id) REFERENCES songs(id)
+			);
 		`)
 	}
 	if err != nil {
